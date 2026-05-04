@@ -562,4 +562,4 @@ For questions or issues:
 
 ---
 
-> Built on [Stellar](https://stellar.org) · Funded through [Drips Wave](https://drips.network/wave/stellar) · Open source, forever
+> Built on [Stellar](https://stellar.org)
