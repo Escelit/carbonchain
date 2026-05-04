@@ -547,7 +547,7 @@ All existing contract methods remain unchanged. Session features are opt-in, all
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+License: MIT Stellar — see the [LICENSE](LICENSE) file for details.
 
 ---
 
