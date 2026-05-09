@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, UnauthorizedException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -23,9 +28,16 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly keypairService: StellarKeypairService,
   ) {
-    const network = this.configService.get<string>('STELLAR_NETWORK', 'TESTNET');
-    this.networkPassphrase = network === 'PUBLIC' ? Networks.PUBLIC : Networks.TESTNET;
-    this.serverHomeDomain = this.configService.get<string>('HOME_DOMAIN', 'localhost');
+    const network = this.configService.get<string>(
+      'STELLAR_NETWORK',
+      'TESTNET',
+    );
+    this.networkPassphrase =
+      network === 'PUBLIC' ? Networks.PUBLIC : Networks.TESTNET;
+    this.serverHomeDomain = this.configService.get<string>(
+      'HOME_DOMAIN',
+      'localhost',
+    );
   }
 
   /**
@@ -33,9 +45,10 @@ export class AuthService {
    * The server signs a transaction with a random nonce operation (manageData)
    * and returns it for the client wallet to sign.
    */
-  async generateChallenge(
-    clientAccount: string,
-  ): Promise<{ transaction: string; network_passphrase: string }> {
+  generateChallenge(clientAccount: string): {
+    transaction: string;
+    network_passphrase: string;
+  } {
     if (!clientAccount || !StrKey.isValidEd25519PublicKey(clientAccount)) {
       throw new BadRequestException('Invalid Stellar account address');
     }
@@ -45,7 +58,9 @@ export class AuthService {
     // SEP-10 requires sequence 0 for the challenge account
     const account = new Account(serverKeypair.publicKey(), '-1');
 
-    const nonce = Buffer.from(Keypair.random().rawPublicKey()).toString('base64');
+    const nonce = Buffer.from(Keypair.random().rawPublicKey()).toString(
+      'base64',
+    );
 
     const tx = new TransactionBuilder(account, {
       fee: '100',
@@ -76,7 +91,7 @@ export class AuthService {
    *  2. Server signature is present and valid
    *  3. Client signature is present and valid on the manageData operation
    */
-  async verifyAndIssueToken(signedTransactionXdr: string): Promise<{ access_token: string }> {
+  verifyAndIssueToken(signedTransactionXdr: string): { access_token: string } {
     let tx: Transaction;
     try {
       tx = new Transaction(signedTransactionXdr, this.networkPassphrase);
@@ -87,14 +102,22 @@ export class AuthService {
     // Check time bounds
     const now = Math.floor(Date.now() / 1000);
     const timeBounds = tx.timeBounds;
-    if (!timeBounds || now < Number(timeBounds.minTime) || now > Number(timeBounds.maxTime)) {
-      throw new UnauthorizedException('Challenge transaction has expired or is not yet valid');
+    if (
+      !timeBounds ||
+      now < Number(timeBounds.minTime) ||
+      now > Number(timeBounds.maxTime)
+    ) {
+      throw new UnauthorizedException(
+        'Challenge transaction has expired or is not yet valid',
+      );
     }
 
     // Extract client account from the first manageData operation source
     const manageDataOp = tx.operations.find((op) => op.type === 'manageData');
     if (!manageDataOp || !manageDataOp.source) {
-      throw new BadRequestException('Challenge transaction missing manageData operation');
+      throw new BadRequestException(
+        'Challenge transaction missing manageData operation',
+      );
     }
     const clientAccount = manageDataOp.source;
 

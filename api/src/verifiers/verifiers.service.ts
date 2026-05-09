@@ -1,7 +1,7 @@
-import { Injectable, Logger, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
-import { nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { scValToNative } from '@stellar/stellar-sdk';
 
 export interface VerifierInfo {
   address: string;
@@ -16,17 +16,23 @@ export class VerifiersService {
     private readonly stellarService: StellarService,
     private readonly configService: ConfigService,
   ) {
-    this.contractId = this.configService.get<string>('CREDIT_REGISTRY_CONTRACT_ID', '');
+    this.contractId = this.configService.get<string>(
+      'CREDIT_REGISTRY_CONTRACT_ID',
+      '',
+    );
   }
 
   async listVerifiers(): Promise<VerifierInfo[]> {
     try {
-      const retval = await this.stellarService.readContract(this.contractId, 'list_verifiers');
+      const retval = await this.stellarService.readContract(
+        this.contractId,
+        'list_verifiers',
+      );
       if (!retval) return [];
       const native = scValToNative(retval) as string[];
       return native.map((address) => ({ address }));
-    } catch (err) {
-      this.logger.error(`Failed to list verifiers: ${err.message}`);
+    } catch (err: unknown) {
+      this.logger.error(`Failed to list verifiers: ${(err as Error).message}`);
       return [];
     }
   }

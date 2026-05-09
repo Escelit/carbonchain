@@ -1,8 +1,8 @@
 export enum CreditStatus {
-  Pending = "Pending",
-  Active = "Active",
-  Retired = "Retired",
-  Flagged = "Flagged",
+  Pending = 'Pending',
+  Active = 'Active',
+  Retired = 'Retired',
+  Flagged = 'Flagged',
 }
 
 export interface CreditMetadata {
@@ -45,7 +45,7 @@ export interface Offer {
   price_xlm: string; // BigInt as string (stroops)
   tonnes_available: string;
   created_at: number;
-  status: "open" | "filled" | "cancelled";
+  status: 'open' | 'filled' | 'cancelled';
 }
 
 export interface MrvDataPoint {
@@ -62,7 +62,7 @@ export interface OperationContext {
   operation: string;
   actor: string;
   target_id: string;
-  result: "success" | "failure";
+  result: 'success' | 'failure';
   timestamp: number;
   metadata: Record<string, string>;
 }
@@ -78,5 +78,5 @@ export interface InteractionSession {
   initiator: string;
   created_at: number;
   operation_count: number;
-  status: "active" | "completed";
+  status: 'active' | 'completed';
 }

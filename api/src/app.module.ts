@@ -27,5 +27,3 @@ import { MarketplaceModule } from './marketplace/marketplace.module';
   providers: [AppService],
 })
 export class AppModule {}
-
-

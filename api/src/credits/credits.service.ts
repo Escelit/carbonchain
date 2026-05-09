@@ -1,8 +1,9 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
 import { StellarKeypairService } from '../stellar/stellar-keypair.service';
-import { xdr, scValToNative, nativeToScVal } from '@stellar/stellar-sdk';
+import { scValToNative, nativeToScVal } from '@stellar/stellar-sdk';
 import { CreditMetadata, CreditStatus } from '../shared';
 
 export class IssueCreditDto {
@@ -11,7 +12,7 @@ export class IssueCreditDto {
   vintageYear: number;
   methodology: string;
   geography: string;
-  tonnes: string;   // i128 as string
+  tonnes: string;
   ipfsHash: string;
 }
 
@@ -25,7 +26,8 @@ export class CreditsService {
     private configService: ConfigService,
     private keypairService: StellarKeypairService,
   ) {
-    this.contractId = this.configService.get<string>('CREDIT_REGISTRY_CONTRACT_ID') || '';
+    this.contractId =
+      this.configService.get<string>('CREDIT_REGISTRY_CONTRACT_ID') || '';
   }
 
   async issueCredit(dto: IssueCreditDto): Promise<{ creditId: string }> {
@@ -41,10 +43,18 @@ export class CreditsService {
     ];
     const signer = this.keypairService.getAdminKeypair();
     const response = await this.stellarService.invokeContract(
-      this.contractId, 'submit_credit', args, signer,
+      this.contractId,
+      'submit_credit',
+      args,
+      signer,
     );
-    const creditId = (response as any).returnValue
-      ? Buffer.from(scValToNative((response as any).returnValue) as Uint8Array).toString('hex')
+    const rv = (response as unknown as Record<string, unknown>).returnValue;
+    const creditId = rv
+      ? Buffer.from(
+          scValToNative(
+            rv as Parameters<typeof scValToNative>[0],
+          ) as Uint8Array,
+        ).toString('hex')
       : 'unknown';
     return { creditId };
   }
@@ -52,18 +62,24 @@ export class CreditsService {
   async getCredit(creditId: string): Promise<CreditMetadata> {
     try {
       this.logger.log(`Fetching credit metadata for ID: ${creditId}`);
-      
-      const args = [nativeToScVal(Buffer.from(creditId, 'hex'), { type: 'bytes' })];
-      const retval = await this.stellarService.readContract(this.contractId, 'get_credit', args);
-      
-      if (!retval) {
-        throw new NotFoundException(`Credit with ID ${creditId} not found on-chain`);
-      }
-
+      const args = [
+        nativeToScVal(Buffer.from(creditId, 'hex'), { type: 'bytes' }),
+      ];
+      const retval = await this.stellarService.readContract(
+        this.contractId,
+        'get_credit',
+        args,
+      );
+      if (!retval)
+        throw new NotFoundException(
+          `Credit with ID ${creditId} not found on-chain`,
+        );
       const native = scValToNative(retval);
       return this.mapToCreditMetadata(creditId, native);
-    } catch (error) {
-      this.logger.error(`Failed to fetch credit ${creditId}: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to fetch credit ${creditId}: ${(error as Error).message}`,
+      );
       throw error;
     }
   }
@@ -71,18 +87,19 @@ export class CreditsService {
   async listCreditsByProject(projectId: string): Promise<string[]> {
     try {
       this.logger.log(`Listing credits for project: ${projectId}`);
-      
       const args = [nativeToScVal(projectId, { type: 'string' })];
-      const retval = await this.stellarService.readContract(this.contractId, 'list_credits_by_project', args);
-      
-      if (!retval) {
-        return [];
-      }
-
+      const retval = await this.stellarService.readContract(
+        this.contractId,
+        'list_credits_by_project',
+        args,
+      );
+      if (!retval) return [];
       const native = scValToNative(retval) as Buffer[];
-      return native.map(buf => buf.toString('hex'));
-    } catch (error) {
-      this.logger.error(`Failed to list credits for project ${projectId}: ${error.message}`);
+      return native.map((buf) => buf.toString('hex'));
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to list credits for project ${projectId}: ${(error as Error).message}`,
+      );
       return [];
     }
   }
@@ -90,13 +107,13 @@ export class CreditsService {
   private mapToCreditMetadata(id: string, native: any): CreditMetadata {
     return {
       id,
-      project_id: native.project_id.toString(),
-      issuer: native.issuer.toString(), // Address to string
+      project_id: String(native.project_id),
+      issuer: String(native.issuer),
       vintage_year: Number(native.vintage_year),
-      methodology: native.methodology.toString(),
-      geography: native.geography.toString(),
-      tonnes: native.tonnes.toString(), // i128 to string
-      ipfs_hash: native.ipfs_hash.toString(),
+      methodology: String(native.methodology),
+      geography: String(native.geography),
+      tonnes: String(native.tonnes),
+      ipfs_hash: String(native.ipfs_hash),
       status: native.status as CreditStatus,
       issued_at: Number(native.issued_at),
     };

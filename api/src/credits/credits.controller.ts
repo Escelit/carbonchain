@@ -17,7 +17,9 @@ export class CreditsController {
   }
 
   @Get('project/:projectId')
-  async listByProject(@Param('projectId') projectId: string): Promise<string[]> {
+  async listByProject(
+    @Param('projectId') projectId: string,
+  ): Promise<string[]> {
     return this.creditsService.listCreditsByProject(projectId);
   }
 }

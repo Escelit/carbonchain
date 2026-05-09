@@ -4,11 +4,9 @@ import { ProjectProfile } from '../shared';
 @Injectable()
 export class ProjectsService {
   private readonly logger = new Logger(ProjectsService.name);
-  
-  // In-memory storage until Day 7 (PostgreSQL setup)
   private projects: Map<string, ProjectProfile> = new Map();
 
-  async createProject(data: Omit<ProjectProfile, 'id'>): Promise<ProjectProfile> {
+  createProject(data: Omit<ProjectProfile, 'id'>): ProjectProfile {
     const id = `proj_${Math.random().toString(36).substring(2, 11)}`;
     const newProject: ProjectProfile = { ...data, id };
     this.projects.set(id, newProject);
@@ -16,15 +14,14 @@ export class ProjectsService {
     return newProject;
   }
 
-  async getProject(id: string): Promise<ProjectProfile> {
+  getProject(id: string): ProjectProfile {
     const project = this.projects.get(id);
-    if (!project) {
+    if (!project)
       throw new NotFoundException(`Project with ID ${id} not found`);
-    }
     return project;
   }
 
-  async listProjects(): Promise<ProjectProfile[]> {
+  listProjects(): ProjectProfile[] {
     return Array.from(this.projects.values());
   }
 }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
@@ -7,8 +8,8 @@ import { RetirementRecord } from '../shared';
 
 export class RetireDto {
   buyerPublicKey: string;
-  creditId: string;       // hex-encoded BytesN<32>
-  tonnes: string;         // i128 as string
+  creditId: string;
+  tonnes: string;
   reason: string;
 }
 
@@ -23,13 +24,20 @@ export class RetirementService {
     private readonly keypairService: StellarKeypairService,
     private readonly configService: ConfigService,
   ) {
-    this.retirementContractId = this.configService.get<string>('RETIREMENT_CONTRACT_ID', '');
-    this.registryContractId = this.configService.get<string>('CREDIT_REGISTRY_CONTRACT_ID', '');
+    this.retirementContractId = this.configService.get<string>(
+      'RETIREMENT_CONTRACT_ID',
+      '',
+    );
+    this.registryContractId = this.configService.get<string>(
+      'CREDIT_REGISTRY_CONTRACT_ID',
+      '',
+    );
   }
 
   async retire(dto: RetireDto): Promise<{ retirementId: string }> {
-    this.logger.log(`Retiring credit ${dto.creditId} for ${dto.buyerPublicKey}`);
-
+    this.logger.log(
+      `Retiring credit ${dto.creditId} for ${dto.buyerPublicKey}`,
+    );
     const args = [
       nativeToScVal(dto.buyerPublicKey, { type: 'address' }),
       nativeToScVal(Buffer.from(dto.creditId, 'hex'), { type: 'bytes' }),
@@ -37,7 +45,6 @@ export class RetirementService {
       nativeToScVal(dto.reason, { type: 'string' }),
       nativeToScVal(this.registryContractId, { type: 'address' }),
     ];
-
     const signer = this.keypairService.getAdminKeypair();
     const response = await this.stellarService.invokeContract(
       this.retirementContractId,
@@ -45,32 +52,36 @@ export class RetirementService {
       args,
       signer,
     );
-
-    // Extract retirement ID (BytesN<32>) from the transaction result
-    const retirementId = (response as any).returnValue
-      ? Buffer.from(scValToNative((response as any).returnValue) as Uint8Array).toString('hex')
+    const rv = (response as unknown as Record<string, unknown>).returnValue;
+    const retirementId = rv
+      ? Buffer.from(
+          scValToNative(
+            rv as Parameters<typeof scValToNative>[0],
+          ) as Uint8Array,
+        ).toString('hex')
       : 'unknown';
-
     return { retirementId };
   }
 
   async getRetirement(retirementId: string): Promise<RetirementRecord> {
-    const args = [nativeToScVal(Buffer.from(retirementId, 'hex'), { type: 'bytes' })];
+    const args = [
+      nativeToScVal(Buffer.from(retirementId, 'hex'), { type: 'bytes' }),
+    ];
     const retval = await this.stellarService.readContract(
       this.retirementContractId,
       'get_retirement',
       args,
     );
+    if (!retval)
+      throw new NotFoundException(`Retirement ${retirementId} not found`);
 
-    if (!retval) throw new NotFoundException(`Retirement ${retirementId} not found`);
-
-    const n = scValToNative(retval) as any;
+    const n = scValToNative(retval);
     return {
       id: retirementId,
       credit_id: Buffer.from(n.credit_id as Uint8Array).toString('hex'),
-      buyer: n.buyer.toString(),
-      tonnes_retired: n.tonnes_retired.toString(),
-      reason: n.reason.toString(),
+      buyer: String(n.buyer),
+      tonnes_retired: String(n.tonnes_retired),
+      reason: String(n.reason),
       retired_at: Number(n.retired_at),
       tx_hash: '',
     };

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
@@ -7,9 +8,9 @@ import { Offer } from '../shared';
 
 export class CreateOfferDto {
   sellerPublicKey: string;
-  creditId: string;   // hex BytesN<32>
-  priceXlm: string;   // stroops as string
-  tonnes: string;     // i128 as string
+  creditId: string;
+  priceXlm: string;
+  tonnes: string;
 }
 
 @Injectable()
@@ -22,7 +23,10 @@ export class MarketplaceService {
     private readonly keypairService: StellarKeypairService,
     private readonly configService: ConfigService,
   ) {
-    this.contractId = this.configService.get<string>('MARKETPLACE_CONTRACT_ID', '');
+    this.contractId = this.configService.get<string>(
+      'MARKETPLACE_CONTRACT_ID',
+      '',
+    );
   }
 
   async createOffer(dto: CreateOfferDto): Promise<{ offerId: string }> {
@@ -35,25 +39,36 @@ export class MarketplaceService {
     ];
     const signer = this.keypairService.getAdminKeypair();
     const response = await this.stellarService.invokeContract(
-      this.contractId, 'create_offer', args, signer,
+      this.contractId,
+      'create_offer',
+      args,
+      signer,
     );
-    const offerId = (response as any).returnValue
-      ? String(scValToNative((response as any).returnValue))
+    const rv = (response as unknown as Record<string, unknown>).returnValue;
+    const offerId = rv
+      ? String(scValToNative(rv as Parameters<typeof scValToNative>[0]))
       : 'unknown';
     return { offerId };
   }
 
   async getOffer(offerId: number): Promise<Offer> {
     const args = [nativeToScVal(offerId, { type: 'u64' })];
-    const retval = await this.stellarService.readContract(this.contractId, 'get_offer', args);
+    const retval = await this.stellarService.readContract(
+      this.contractId,
+      'get_offer',
+      args,
+    );
     if (!retval) throw new NotFoundException(`Offer ${offerId} not found`);
-    return this.mapOffer(offerId, scValToNative(retval) as any);
+
+    return this.mapOffer(offerId, scValToNative(retval));
   }
 
   async getOffersBySeller(seller: string): Promise<string[]> {
     const args = [nativeToScVal(seller, { type: 'address' })];
     const retval = await this.stellarService.readContract(
-      this.contractId, 'get_offers_by_seller', args,
+      this.contractId,
+      'get_offers_by_seller',
+      args,
     );
     if (!retval) return [];
     return (scValToNative(retval) as bigint[]).map(String);
@@ -65,16 +80,21 @@ export class MarketplaceService {
       nativeToScVal(offerId, { type: 'u64' }),
     ];
     const signer = this.keypairService.getAdminKeypair();
-    await this.stellarService.invokeContract(this.contractId, 'cancel_offer', args, signer);
+    await this.stellarService.invokeContract(
+      this.contractId,
+      'cancel_offer',
+      args,
+      signer,
+    );
   }
 
   private mapOffer(id: number, n: any): Offer {
     return {
       id: String(id),
-      seller: n.seller.toString(),
+      seller: String(n.seller),
       credit_id: Buffer.from(n.credit_id as Uint8Array).toString('hex'),
-      price_xlm: n.price_xlm.toString(),
-      tonnes_available: n.tonnes.toString(),
+      price_xlm: String(n.price_xlm),
+      tonnes_available: String(n.tonnes),
       created_at: Number(n.created_at),
       status: n.active ? 'open' : 'cancelled',
     };

@@ -9,7 +9,6 @@ import {
   Keypair,
   Operation,
   xdr,
-  StrKey,
   Address,
   rpc,
 } from '@stellar/stellar-sdk';
@@ -24,13 +23,20 @@ export class StellarService implements OnModuleInit {
   constructor(private configService: ConfigService) {}
 
   onModuleInit() {
-    const horizonUrl = this.configService.get<string>('HORIZON_URL') || 'https://horizon-testnet.stellar.org';
-    const sorobanRpcUrl = this.configService.get<string>('SOROBAN_RPC_URL') || 'https://soroban-testnet.stellar.org';
-    const network = this.configService.get<string>('STELLAR_NETWORK', 'TESTNET');
+    const horizonUrl =
+      this.configService.get<string>('HORIZON_URL') ||
+      'https://horizon-testnet.stellar.org';
+    const sorobanRpcUrl =
+      this.configService.get<string>('SOROBAN_RPC_URL') ||
+      'https://soroban-testnet.stellar.org';
+    const network = this.configService.get<string>(
+      'STELLAR_NETWORK',
+      'TESTNET',
+    );
 
     this.horizonServer = new Horizon.Server(horizonUrl);
     this.sorobanRpcServer = new rpc.Server(sorobanRpcUrl);
-    
+
     switch (network.toUpperCase()) {
       case 'PUBLIC':
         this.networkPassphrase = Networks.PUBLIC;
@@ -53,8 +59,10 @@ export class StellarService implements OnModuleInit {
     args: xdr.ScVal[] = [],
     signerKeypair: Keypair,
   ): Promise<rpc.Api.GetTransactionResponse> {
-    const account = await this.horizonServer.loadAccount(signerKeypair.publicKey());
-    
+    const account = await this.horizonServer.loadAccount(
+      signerKeypair.publicKey(),
+    );
+
     const tx = new TransactionBuilder(account, {
       fee: '1000',
       networkPassphrase: this.networkPassphrase,
@@ -75,13 +83,13 @@ export class StellarService implements OnModuleInit {
       .build();
 
     const simulation = await this.simulateTransaction(tx);
-    
+
     if (rpc.Api.isSimulationSuccess(simulation)) {
       const preparedTx = rpc.assembleTransaction(tx, simulation).build();
       preparedTx.sign(signerKeypair);
-      
-      const response = await this.sorobanRpcServer.sendTransaction(preparedTx as any);
-      
+
+      const response = await this.sorobanRpcServer.sendTransaction(preparedTx);
+
       if ((response.status as any) === 'PENDING') {
         return this.pollTransactionStatus(response.hash);
       }
@@ -95,8 +103,10 @@ export class StellarService implements OnModuleInit {
     operations: Operation[],
     signerKeypair: Keypair,
   ): Promise<any> {
-    const account = await this.horizonServer.loadAccount(signerKeypair.publicKey());
-    
+    const account = await this.horizonServer.loadAccount(
+      signerKeypair.publicKey(),
+    );
+
     const txBuilder = new TransactionBuilder(account, {
       fee: '1000',
       networkPassphrase: this.networkPassphrase,
@@ -128,7 +138,12 @@ export class StellarService implements OnModuleInit {
     const response = await this.sorobanRpcServer.getLedgerEntries(ledgerKey);
     if (response.entries && response.entries.length > 0) {
       const entry = response.entries[0];
-      const contractData = xdr.LedgerEntryData.fromXDR((entry as any).xdr, 'base64').contractData();
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const entryXdr = (entry as any).xdr as string;
+      const contractData = xdr.LedgerEntryData.fromXDR(
+        entryXdr,
+        'base64',
+      ).contractData();
       return contractData.val();
     }
     return null;
@@ -164,7 +179,10 @@ export class StellarService implements OnModuleInit {
     args: xdr.ScVal[] = [],
   ): Promise<xdr.ScVal | undefined> {
     const tx = new TransactionBuilder(
-      new Account('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '0'),
+      new Account(
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        '0',
+      ),
       {
         fee: '100',
         networkPassphrase: this.networkPassphrase,
@@ -193,7 +211,6 @@ export class StellarService implements OnModuleInit {
   }
 
   getHorizonServer(): Horizon.Server {
-
     return this.horizonServer;
   }
 
