@@ -17,17 +17,23 @@ import { StellarWalletService } from '../services/stellar-wallet.service';
           <button class="btn btn-outline" (click)="auth.logout()">Disconnect</button>
         </div>
       } @else {
-        <button
-          class="btn btn-primary"
-          [disabled]="auth.authState() === 'authenticating'"
-          (click)="login()"
-        >
-          @if (auth.authState() === 'authenticating') {
-            Connecting…
-          } @else {
-            Connect Wallet
-          }
-        </button>
+        @if (!wallet.isFreighterInstalled) {
+          <a class="btn btn-primary" href="https://freighter.app" target="_blank" rel="noopener">
+            Install Freighter
+          </a>
+        } @else {
+          <button
+            class="btn btn-primary"
+            [disabled]="auth.authState() === 'authenticating'"
+            (click)="login()"
+          >
+            @if (auth.authState() === 'authenticating') {
+              Connecting…
+            } @else {
+              Connect Wallet
+            }
+          </button>
+        }
         @if (auth.authError()) {
           <p class="error">{{ auth.authError() }}</p>
         }
