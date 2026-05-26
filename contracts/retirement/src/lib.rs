@@ -3,11 +3,18 @@ pub mod types;
 
 use crate::types::{DataKey, RetirementRecord};
 use soroban_sdk::{
-    contract, contractimpl, symbol_short,
+    contract, contractimpl, contracterror, symbol_short,
     Address, BytesN, Env, String, Symbol, Vec,
     IntoVal,
 };
 use soroban_sdk::xdr::ToXdr;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum RetirementError {
+    CreditNotActive = 110,
+}
 
 #[contract]
 pub struct Retirement;
@@ -29,7 +36,7 @@ impl Retirement {
         tonnes: i128,
         reason: String,
         registry_id: Address,
-    ) -> BytesN<32> {
+    ) -> Result<BytesN<32>, RetirementError> {
         buyer.require_auth();
 
         if tonnes <= 0 {
@@ -77,7 +84,7 @@ impl Retirement {
             (credit_id, retirement_id.clone()),
         );
 
-        retirement_id
+        Ok(retirement_id)
     }
 
     pub fn get_retirement(env: Env, retirement_id: BytesN<32>) -> Option<RetirementRecord> {

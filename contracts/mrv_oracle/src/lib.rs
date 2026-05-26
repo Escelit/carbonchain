@@ -36,6 +36,8 @@ pub enum DataKey {
 pub enum OracleError {
     NotInitialized   = 119,
     Unauthorized     = 120,
+    AlreadyInitialized = 121,
+    Overflow         = 122,
 }
 
 // Maximum MRV history entries retained per project (ring-buffer eviction).
@@ -50,7 +52,7 @@ pub struct MrvOracle;
 impl MrvOracle {
     pub fn initialize(env: Env, admin: Address) -> Result<(), OracleError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            return Err(OracleError::Unauthorized);
+            return Err(OracleError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.events().publish((symbol_short!("mrv_init"),), admin);
@@ -83,7 +85,7 @@ impl MrvOracle {
             return Err(OracleError::Unauthorized);
         }
 
-        let anomaly = Self::detect_anomaly(&env, &project_id, tonnes);
+        let anomaly = Self::detect_anomaly(&env, &project_id, tonnes)?;
 
         let point = MrvDataPoint {
             oracle: oracle.clone(),
@@ -149,17 +151,18 @@ impl MrvOracle {
     }
 
     /// Returns true if `new_tonnes` deviates more than 20% from the last reading.
-    fn detect_anomaly(env: &Env, project_id: &String, new_tonnes: i128) -> bool {
+    fn detect_anomaly(env: &Env, project_id: &String, new_tonnes: i128) -> Result<bool, OracleError> {
         let prev: Option<MrvDataPoint> = env
             .storage().persistent()
             .get(&DataKey::Latest(project_id.clone()));
         match prev {
-            None => false,
-            Some(p) if p.tonnes == 0 => false,
+            None => Ok(false),
+            Some(p) if p.tonnes == 0 => Ok(false),
             Some(p) => {
                 let diff = (new_tonnes - p.tonnes).abs();
                 // diff / prev > 0.20  ⟺  diff * 5 > prev
-                diff * 5 > p.tonnes.abs()
+                let diff_times_5 = diff.checked_mul(5).ok_or(OracleError::Overflow)?;
+                Ok(diff_times_5 > p.tonnes.abs())
             }
         }
     }
