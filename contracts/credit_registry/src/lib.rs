@@ -71,8 +71,32 @@ impl CreditRegistry {
         Ok(())
     }
 
+    /// Returns up to the first 50 verifiers. Use `list_verifiers_paginated` for larger sets.
     pub fn list_verifiers(env: Env) -> Vec<Address> {
-        get_verifiers(&env)
+        let all = get_verifiers(&env);
+        let cap: u32 = 50;
+        if all.len() <= cap {
+            return all;
+        }
+        let mut out: Vec<Address> = Vec::new(&env);
+        for i in 0..cap {
+            out.push_back(all.get(i).unwrap());
+        }
+        out
+    }
+
+    /// Returns one page of verifiers. `page` is 0-indexed; `page_size` must be 1–50.
+    pub fn list_verifiers_paginated(env: Env, page: u32, page_size: u32) -> Vec<Address> {
+        let page_size = if page_size == 0 || page_size > 50 { 50 } else { page_size };
+        let all = get_verifiers(&env);
+        let start = page * page_size;
+        let mut out: Vec<Address> = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < all.len() {
+            out.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        out
     }
 
     // ── Credit lifecycle ─────────────────────────────────────────────────────
@@ -136,7 +160,7 @@ impl CreditRegistry {
             return Err(CarbonChainError::Unauthorized);
         }
         let mut credit = get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)?;
-        if credit.status == CreditStatus::Retired {
+        if credit.status == CreditStatus::Retired || credit.status == CreditStatus::Flagged {
             return Err(CarbonChainError::InvalidStatusTransition);
         }
         credit.status = CreditStatus::Flagged;
@@ -270,6 +294,39 @@ mod tests {
         let id = submit_test_credit(&env, &client, &issuer);
         client.flag_credit(&verifier, &id, &String::from_str(&env, "suspicious data"));
         assert_eq!(client.get_credit(&id).status, CreditStatus::Flagged);
+    }
+
+    #[test]
+    fn test_double_flag_fails() {
+        let (env, client, admin, verifier) = setup();
+        client.register_verifier(&admin, &verifier);
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        client.flag_credit(&verifier, &id, &String::from_str(&env, "first flag"));
+        let result = client.try_flag_credit(&verifier, &id, &String::from_str(&env, "second flag"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_verifiers_paginated() {
+        let (env, client, admin, _) = setup();
+        let mut addrs = soroban_sdk::Vec::new(&env);
+        for _ in 0..5u32 {
+            let v = Address::generate(&env);
+            client.register_verifier(&admin, &v);
+            addrs.push_back(v);
+        }
+        // page 0, size 2 → first 2
+        let p0 = client.list_verifiers_paginated(&0, &2);
+        assert_eq!(p0.len(), 2);
+        assert_eq!(p0.get(0).unwrap(), addrs.get(0).unwrap());
+        // page 1, size 2 → next 2
+        let p1 = client.list_verifiers_paginated(&1, &2);
+        assert_eq!(p1.len(), 2);
+        assert_eq!(p1.get(0).unwrap(), addrs.get(2).unwrap());
+        // page 2, size 2 → last 1
+        let p2 = client.list_verifiers_paginated(&2, &2);
+        assert_eq!(p2.len(), 1);
     }
 
     #[test]

@@ -87,6 +87,29 @@ impl Retirement {
             .get(&DataKey::AccountRetirements(account))
             .unwrap_or_else(|| Vec::new(&env))
     }
+
+    /// Returns one page of retirement IDs for `account`. `page` is 0-indexed; `page_size` capped at 50.
+    pub fn get_retirements_by_account_paginated(
+        env: Env,
+        account: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<BytesN<32>> {
+        let page_size = if page_size == 0 || page_size > 50 { 50 } else { page_size };
+        let all: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AccountRetirements(account))
+            .unwrap_or_else(|| Vec::new(&env));
+        let start = page * page_size;
+        let mut out: Vec<BytesN<32>> = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < all.len() {
+            out.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -197,5 +220,61 @@ mod tests {
             credit.status,
             carbonchain_credit_registry::types::CreditStatus::Retired
         );
+    }
+
+    #[test]
+    fn test_get_retirements_by_account_paginated() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Register 3 separate credits so we can retire each once.
+        let registry_id = env.register(CreditRegistry, ());
+        let registry_client =
+            carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        registry_client.initialize(&admin);
+        registry_client.register_verifier(&admin, &verifier);
+
+        let contract_id = env.register(Retirement, ());
+        let client = RetirementClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+
+        let project_ids = [
+            String::from_str(&env, "PROJ-A"),
+            String::from_str(&env, "PROJ-B"),
+            String::from_str(&env, "PROJ-C"),
+        ];
+        let mut ret_ids = soroban_sdk::Vec::new(&env);
+        for proj in project_ids.iter() {
+            let cid = registry_client.submit_credit(
+                &issuer,
+                proj,
+                &2024,
+                &String::from_str(&env, "VCS"),
+                &String::from_str(&env, "NG"),
+                &1_000_000,
+                &String::from_str(&env, "bafybei"),
+            );
+            registry_client.approve_and_mint(&verifier, &cid);
+            let rid = client.retire(
+                &buyer,
+                &cid,
+                &1_000_000,
+                &String::from_str(&env, "offset"),
+                &registry_id,
+            );
+            ret_ids.push_back(rid);
+        }
+
+        // page 0, size 2 → first 2
+        let p0 = client.get_retirements_by_account_paginated(&buyer, &0, &2);
+        assert_eq!(p0.len(), 2);
+        assert_eq!(p0.get(0).unwrap(), ret_ids.get(0).unwrap());
+        // page 1, size 2 → last 1
+        let p1 = client.get_retirements_by_account_paginated(&buyer, &1, &2);
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1.get(0).unwrap(), ret_ids.get(2).unwrap());
     }
 }
