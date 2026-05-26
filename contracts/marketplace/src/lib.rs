@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Env, Address, BytesN, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Env, Address, BytesN, Symbol, Vec, IntoVal};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,10 +26,11 @@ pub enum DataKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum MarketplaceError {
-    OfferNotFound = 115,
-    Unauthorized  = 116,
-    InvalidPrice  = 117,
-    AlreadyClosed = 118,
+    OfferNotFound  = 115,
+    Unauthorized   = 116,
+    InvalidPrice   = 117,
+    AlreadyClosed  = 118,
+    CreditNotActive = 119,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -46,10 +47,21 @@ impl Marketplace {
         credit_id: BytesN<32>,
         price_xlm: i128,
         tonnes: i128,
+        registry_id: Address,
     ) -> Result<u64, MarketplaceError> {
         seller.require_auth();
         if price_xlm <= 0 || tonnes <= 0 {
             return Err(MarketplaceError::InvalidPrice);
+        }
+
+        // Validate credit exists and is Active in the registry
+        let credit: carbonchain_credit_registry::types::CreditMetadata = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "get_credit"),
+            (credit_id.clone(),).into_val(&env),
+        );
+        if credit.status != carbonchain_credit_registry::types::CreditStatus::Active {
+            return Err(MarketplaceError::CreditNotActive);
         }
 
         let offer_id = Self::next_id(&env);
@@ -127,22 +139,42 @@ impl Marketplace {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Env, BytesN};
+    use soroban_sdk::{Env, BytesN, String};
+    use carbonchain_credit_registry::CreditRegistry;
 
-    fn setup() -> (Env, MarketplaceClient<'static>, Address, BytesN<32>) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let id = env.register(Marketplace, ());
-        let client = MarketplaceClient::new(&env, &id);
-        let seller = Address::generate(&env);
-        let credit_id = BytesN::from_array(&env, &[1u8; 32]);
-        (env, client, seller, credit_id)
+    fn setup_with_registry(env: &Env) -> (MarketplaceClient<'static>, Address, Address, BytesN<32>) {
+        let registry_id = env.register(CreditRegistry, ());
+        let registry_client = carbonchain_credit_registry::CreditRegistryClient::new(env, &registry_id);
+
+        let admin = Address::generate(env);
+        let verifier = Address::generate(env);
+        let issuer = Address::generate(env);
+        registry_client.initialize(&admin);
+        registry_client.register_verifier(&admin, &verifier);
+
+        let credit_id = registry_client.submit_credit(
+            &issuer,
+            &String::from_str(env, "PROJ-001"),
+            &2024,
+            &String::from_str(env, "VCS"),
+            &String::from_str(env, "NG"),
+            &1_000_000,
+            &String::from_str(env, "bafybei123"),
+        );
+        registry_client.approve_and_mint(&verifier, &credit_id);
+
+        let marketplace_id = env.register(Marketplace, ());
+        let client = MarketplaceClient::new(env, &marketplace_id);
+        let seller = Address::generate(env);
+        (client, seller, registry_id, credit_id)
     }
 
     #[test]
     fn test_create_offer() {
-        let (_env, client, seller, credit_id) = setup();
-        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         assert_eq!(offer_id, 0);
         let offer = client.get_offer(&offer_id);
         assert!(offer.active);
@@ -151,47 +183,108 @@ mod tests {
 
     #[test]
     fn test_cancel_offer() {
-        let (_env, client, seller, credit_id) = setup();
-        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         client.cancel_offer(&seller, &offer_id);
         assert!(!client.get_offer(&offer_id).active);
     }
 
     #[test]
     fn test_cancel_already_closed_fails() {
-        let (_env, client, seller, credit_id) = setup();
-        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         client.cancel_offer(&seller, &offer_id);
         assert!(client.try_cancel_offer(&seller, &offer_id).is_err());
     }
 
     #[test]
     fn test_invalid_price_fails() {
-        let (_env, client, seller, credit_id) = setup();
-        assert!(client.try_create_offer(&seller, &credit_id, &0, &500_000).is_err());
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        assert!(client.try_create_offer(&seller, &credit_id, &0, &500_000, &registry_id).is_err());
     }
 
     #[test]
     fn test_get_offers_by_seller() {
-        let (_env, client, seller, credit_id) = setup();
-        client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
-        client.create_offer(&seller, &credit_id, &20_000_000, &250_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        client.create_offer(&seller, &credit_id, &20_000_000, &250_000, &registry_id);
         assert_eq!(client.get_offers_by_seller(&seller).len(), 2);
     }
 
     #[test]
     fn test_offer_count() {
-        let (_env, client, seller, credit_id) = setup();
-        client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
-        client.create_offer(&seller, &credit_id, &20_000_000, &250_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        client.create_offer(&seller, &credit_id, &20_000_000, &250_000, &registry_id);
         assert_eq!(client.offer_count(), 2);
     }
 
     #[test]
     fn test_unauthorized_cancel_fails() {
-        let (env, client, seller, credit_id) = setup();
-        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         let other = Address::generate(&env);
         assert!(client.try_cancel_offer(&other, &offer_id).is_err());
+    }
+
+    #[test]
+    fn test_listing_nonexistent_credit_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let registry_id = env.register(CreditRegistry, ());
+        let registry_client = carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let admin = Address::generate(&env);
+        registry_client.initialize(&admin);
+
+        let marketplace_id = env.register(Marketplace, ());
+        let client = MarketplaceClient::new(&env, &marketplace_id);
+        let seller = Address::generate(&env);
+        let fake_credit_id = BytesN::from_array(&env, &[0u8; 32]);
+
+        let result = client.try_create_offer(&seller, &fake_credit_id, &10_000_000, &500_000, &registry_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_listing_pending_credit_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let registry_id = env.register(CreditRegistry, ());
+        let registry_client = carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        registry_client.initialize(&admin);
+
+        // Submit but do NOT approve — stays Pending
+        let credit_id = registry_client.submit_credit(
+            &issuer,
+            &String::from_str(&env, "PROJ-002"),
+            &2024,
+            &String::from_str(&env, "VCS"),
+            &String::from_str(&env, "NG"),
+            &1_000_000,
+            &String::from_str(&env, "bafybei123"),
+        );
+
+        let marketplace_id = env.register(Marketplace, ());
+        let client = MarketplaceClient::new(&env, &marketplace_id);
+        let seller = Address::generate(&env);
+
+        let result = client.try_create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        assert_eq!(result, Err(Ok(MarketplaceError::CreditNotActive)));
     }
 }
