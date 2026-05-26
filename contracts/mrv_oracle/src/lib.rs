@@ -145,6 +145,25 @@ impl MrvOracle {
         env.storage().persistent().get(&DataKey::Nonce(address)).unwrap_or(0u64)
     }
 
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), OracleError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), OracleError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(OracleError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(OracleError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
     pub fn get_history(env: Env, project_id: String) -> Vec<MrvDataPoint> {
         env.storage()
             .persistent()

@@ -117,6 +117,31 @@ impl Retirement {
         get_nonce(&env, &address)
     }
 
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), RetirementError> {
+        let stored: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .ok_or(RetirementError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored {
+            return Err(RetirementError::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), RetirementError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RetirementError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(RetirementError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
     pub fn get_retirement(env: Env, retirement_id: BytesN<32>) -> Option<RetirementRecord> {
         env.storage()
             .persistent()

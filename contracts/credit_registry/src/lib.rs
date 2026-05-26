@@ -19,9 +19,11 @@ use crate::storage::{
 use crate::types::{CreditMetadata, CreditStatus};
 use crate::events::{credit_submitted, credit_minted, verifier_added, verifier_removed};
 
+#[cfg(not(feature = "library"))]
 #[contract]
 pub struct CreditRegistry;
 
+#[cfg(not(feature = "library"))]
 #[contractimpl]
 impl CreditRegistry {
     // ── Admin ────────────────────────────────────────────────────────────────
@@ -223,6 +225,30 @@ impl CreditRegistry {
 
     pub fn get_nonce(env: Env, address: Address) -> u64 {
         get_nonce(&env, &address)
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        env.storage().instance().set(&crate::types::DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), CarbonChainError> {
+        let pending: Address = env
+            .storage().instance()
+            .get(&crate::types::DataKey::PendingAdmin)
+            .ok_or(CarbonChainError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        new_admin.require_auth();
+        set_admin(&env, &new_admin);
+        env.storage().instance().remove(&crate::types::DataKey::PendingAdmin);
+        Ok(())
     }
 
     pub fn is_verifier(env: Env, address: Address) -> bool {

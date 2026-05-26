@@ -53,6 +53,39 @@ pub struct Marketplace;
 
 #[contractimpl]
 impl Marketplace {
+    pub fn initialize(env: Env, admin: Address) -> Result<(), MarketplaceError> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(MarketplaceError::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), MarketplaceError> {
+        let stored: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .ok_or(MarketplaceError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), MarketplaceError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(MarketplaceError::NoPendingAdmin)?;
+        if new_admin != pending {
+            return Err(MarketplaceError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
     fn read_nonce(env: &Env, addr: &Address) -> u64 {
         env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
     }
