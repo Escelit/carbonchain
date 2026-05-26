@@ -92,6 +92,29 @@ impl Retirement {
             .get(&DataKey::AccountRetirements(account))
             .unwrap_or_else(|| Vec::new(&env))
     }
+
+    /// Returns one page of retirement IDs for `account`. `page` is 0-indexed; `page_size` capped at 50.
+    pub fn get_retirements_by_account_paginated(
+        env: Env,
+        account: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<BytesN<32>> {
+        let page_size = if page_size == 0 || page_size > 50 { 50 } else { page_size };
+        let all: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AccountRetirements(account))
+            .unwrap_or_else(|| Vec::new(&env));
+        let start = page * page_size;
+        let mut out: Vec<BytesN<32>> = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < all.len() {
+            out.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        out
+    }
 }
 
 #[cfg(test)]

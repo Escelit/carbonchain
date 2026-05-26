@@ -38,6 +38,9 @@ pub enum OracleError {
     Unauthorized     = 120,
 }
 
+// Maximum MRV history entries retained per project (ring-buffer eviction).
+const MAX_HISTORY: u32 = 100;
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -97,6 +100,10 @@ impl MrvOracle {
             .storage().persistent()
             .get(&hist_key)
             .unwrap_or_else(|| Vec::new(&env));
+        if history.len() >= MAX_HISTORY {
+            // Evict oldest entry (index 0) to keep the ring buffer bounded.
+            history.remove(0);
+        }
         history.push_back(point);
         env.storage().persistent().set(&hist_key, &history);
 
@@ -240,5 +247,19 @@ mod tests {
         let proj = String::from_str(&env, "PROJ-001");
         let rogue = Address::generate(&env);
         assert!(client.try_update_mrv_data(&rogue, &proj, &1_000_000).is_err());
+    }
+
+    #[test]
+    fn test_history_cap_evicts_oldest() {
+        let (env, client, _admin, oracle) = setup();
+        let proj = String::from_str(&env, "PROJ-CAP");
+        // Submit MAX_HISTORY + 1 entries; history should stay at MAX_HISTORY.
+        for i in 0..=MAX_HISTORY {
+            client.update_mrv_data(&oracle, &proj, &(i as i128 * 1_000));
+        }
+        let history = client.get_history(&proj);
+        assert_eq!(history.len(), MAX_HISTORY);
+        // Oldest entry (tonnes=0) should have been evicted; first entry is now tonnes=1_000.
+        assert_eq!(history.get(0).unwrap().tonnes, 1_000);
     }
 }
