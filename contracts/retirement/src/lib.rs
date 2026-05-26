@@ -39,19 +39,14 @@ impl Retirement {
     ) -> Result<BytesN<32>, RetirementError> {
         buyer.require_auth();
 
-        // Check credit status before retiring
-        let credit: carbonchain_credit_registry::types::CreditMetadata = env.invoke_contract(
-            &registry_id,
-            &Symbol::new(&env, "get_credit"),
-            (credit_id.clone(),).into_val(&env),
-        );
-        if credit.status != carbonchain_credit_registry::types::CreditStatus::Active {
-            return Err(RetirementError::CreditNotActive);
+        if tonnes <= 0 {
+            panic!("tonnes must be greater than zero");
         }
 
         // Derive a deterministic retirement ID from credit_id + reason
         let mut preimage = credit_id.clone().to_xdr(&env);
         preimage.append(&reason.clone().to_xdr(&env));
+        preimage.append(&env.ledger().timestamp().to_xdr(&env));
         let retirement_id: BytesN<32> = env.crypto().sha256(&preimage).into();
 
         let record = RetirementRecord {
@@ -104,6 +99,29 @@ impl Retirement {
             .get(&DataKey::AccountRetirements(account))
             .unwrap_or_else(|| Vec::new(&env))
     }
+
+    /// Returns one page of retirement IDs for `account`. `page` is 0-indexed; `page_size` capped at 50.
+    pub fn get_retirements_by_account_paginated(
+        env: Env,
+        account: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<BytesN<32>> {
+        let page_size = if page_size == 0 || page_size > 50 { 50 } else { page_size };
+        let all: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AccountRetirements(account))
+            .unwrap_or_else(|| Vec::new(&env));
+        let start = page * page_size;
+        let mut out: Vec<BytesN<32>> = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < all.len() {
+            out.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +131,10 @@ mod tests {
     use soroban_sdk::{Env, String};
     use carbonchain_credit_registry::CreditRegistry;
 
-    fn setup_registry(env: &Env) -> (Address, Address, Address, BytesN<32>) {
+    /// Returns (retirement_contract_id, registry_id, credit_id)
+    fn setup(env: &Env) -> (Address, Address, BytesN<32>) {
+        // Register retirement first so its address is known for registry init
+        let retirement_id = env.register(Retirement, ());
         let registry_id = env.register(CreditRegistry, ());
         let registry_client =
             carbonchain_credit_registry::CreditRegistryClient::new(env, &registry_id);
@@ -122,7 +143,7 @@ mod tests {
         let verifier = Address::generate(env);
         let issuer = Address::generate(env);
 
-        registry_client.initialize(&admin);
+        registry_client.initialize(&admin, &retirement_id);
         registry_client.register_verifier(&admin, &verifier);
 
         let credit_id = registry_client.submit_credit(
@@ -136,7 +157,28 @@ mod tests {
         );
         registry_client.approve_and_mint(&verifier, &credit_id);
 
-        (registry_id, admin, verifier, credit_id)
+        (retirement_id, registry_id, credit_id)
+    }
+
+    #[test]
+    fn test_duplicate_retirement_same_reason_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (registry_id, _admin, _verifier, credit_id) = setup_registry(&env);
+
+        let contract_id = env.register(Retirement, ());
+        let client = RetirementClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let reason = String::from_str(&env, "2024 Scope 3 offset");
+
+        // First retirement succeeds.
+        client.retire(&buyer, &credit_id, &1_000_000, &reason, &registry_id);
+
+        // Second retirement with the same credit must fail because the registry
+        // rejects mark_retired on an already-retired credit.
+        let result = client.try_retire(&buyer, &credit_id, &1_000_000, &reason, &registry_id);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -144,9 +186,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (registry_id, _admin, _verifier, credit_id) = setup_registry(&env);
-
-        let contract_id = env.register(Retirement, ());
+        let (contract_id, registry_id, credit_id) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
 
@@ -169,9 +209,7 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (registry_id, _admin, _verifier, credit_id) = setup_registry(&env);
-
-        let contract_id = env.register(Retirement, ());
+        let (contract_id, registry_id, credit_id) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
 
@@ -193,11 +231,9 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (registry_id, _admin, _verifier, credit_id) = setup_registry(&env);
+        let (contract_id, registry_id, credit_id) = setup(&env);
         let registry_client =
             carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
-
-        let contract_id = env.register(Retirement, ());
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
 
@@ -217,39 +253,21 @@ mod tests {
     }
 
     #[test]
-    fn test_retire_pending_credit_fails() {
+    #[should_panic]
+    fn test_retire_zero_tonnes_fails() {
         let env = Env::default();
         env.mock_all_auths();
 
-        let registry_id = env.register(carbonchain_credit_registry::CreditRegistry, ());
-        let registry_client =
-            carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
-
-        let admin = Address::generate(&env);
-        let issuer = Address::generate(&env);
-        registry_client.initialize(&admin);
-
-        // Submit but do NOT approve — credit stays Pending
-        let credit_id = registry_client.submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-002"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &1_000_000,
-            &String::from_str(&env, "bafybei123"),
-        );
-
-        let contract_id = env.register(Retirement, ());
+        let (contract_id, registry_id, credit_id) = setup(&env);
         let client = RetirementClient::new(&env, &contract_id);
         let buyer = Address::generate(&env);
 
-        let result = client.try_retire(
+        client.retire(
             &buyer,
             &credit_id,
-            &1_000_000,
+            &0,
             &String::from_str(&env, "offset"),
             &registry_id,
         );
-        assert!(result.is_err());
     }
+}

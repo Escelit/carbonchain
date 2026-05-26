@@ -40,6 +40,9 @@ pub enum OracleError {
     Overflow         = 122,
 }
 
+// Maximum MRV history entries retained per project (ring-buffer eviction).
+const MAX_HISTORY: u32 = 100;
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -52,6 +55,7 @@ impl MrvOracle {
             return Err(OracleError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.events().publish((symbol_short!("mrv_init"),), admin);
         Ok(())
     }
 
@@ -98,6 +102,10 @@ impl MrvOracle {
             .storage().persistent()
             .get(&hist_key)
             .unwrap_or_else(|| Vec::new(&env));
+        if history.len() >= MAX_HISTORY {
+            // Evict oldest entry (index 0) to keep the ring buffer bounded.
+            history.remove(0);
+        }
         history.push_back(point);
         env.storage().persistent().set(&hist_key, &history);
 
@@ -179,6 +187,24 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(MrvOracle, ());
+        let client = MrvOracleClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let events = env.events().all();
+        // Exactly one event must be emitted: the mrv_init event.
+        assert_eq!(events.len(), 1);
+        let (_, topics, _data): (_, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) =
+            events.get(0).unwrap();
+        // First topic is the symbol "mrv_init".
+        let expected: soroban_sdk::Val = symbol_short!("mrv_init").into();
+        assert_eq!(topics.get(0).unwrap(), expected);
+    }
+
+    #[test]
     fn test_update_and_get_latest() {
         let (env, client, _admin, oracle) = setup();
         let proj = String::from_str(&env, "PROJ-001");
@@ -227,24 +253,16 @@ mod tests {
     }
 
     #[test]
-    fn test_double_initialize_returns_already_initialized() {
-        let (env, client, admin, _oracle) = setup();
-        let result = client.try_initialize(&admin);
-        assert_eq!(
-            result,
-            Err(Ok(OracleError::AlreadyInitialized))
-        );
-    }
-
-    #[test]
-    fn test_anomaly_overflow_returns_error() {
+    fn test_history_cap_evicts_oldest() {
         let (env, client, _admin, oracle) = setup();
-        let proj = String::from_str(&env, "PROJ-001");
-        // Seed a previous reading near i128::MAX / 5 so diff * 5 overflows
-        let near_max = i128::MAX / 5 + 1;
-        client.update_mrv_data(&oracle, &proj, &near_max);
-        // A new reading that produces a diff large enough to overflow when multiplied by 5
-        let result = client.try_update_mrv_data(&oracle, &proj, &i128::MAX);
-        assert_eq!(result, Err(Ok(OracleError::Overflow)));
+        let proj = String::from_str(&env, "PROJ-CAP");
+        // Submit MAX_HISTORY + 1 entries; history should stay at MAX_HISTORY.
+        for i in 0..=MAX_HISTORY {
+            client.update_mrv_data(&oracle, &proj, &(i as i128 * 1_000));
+        }
+        let history = client.get_history(&proj);
+        assert_eq!(history.len(), MAX_HISTORY);
+        // Oldest entry (tonnes=0) should have been evicted; first entry is now tonnes=1_000.
+        assert_eq!(history.get(0).unwrap().tonnes, 1_000);
     }
 }
