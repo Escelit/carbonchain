@@ -25,7 +25,9 @@ export class RetirementController {
   /** POST /retirement — protected: requires JWT */
   @UseGuards(JwtAuthGuard)
   @Post()
-  retire(@Body() dto: RetireDto): Promise<{ retirementId: string }> {
+  retire(
+    @Body() dto: RetireDto,
+  ): Promise<{ retirementId: string; certificateIpfsHash: string }> {
     return this.retirementService.retire(dto);
   }
 

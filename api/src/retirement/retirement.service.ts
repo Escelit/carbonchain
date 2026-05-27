@@ -54,10 +54,18 @@ export class RetirementService {
     );
   }
 
-  async retire(dto: RetireDto): Promise<{ retirementId: string }> {
+  /**
+   * Retire a carbon credit on-chain, then generate a PDF certificate and
+   * pin it to IPFS via Pinata.  Returns both the on-chain retirement ID and
+   * the IPFS hash of the certificate.
+   */
+  async retire(
+    dto: RetireDto,
+  ): Promise<{ retirementId: string; certificateIpfsHash: string }> {
     this.logger.log(
       `Retiring credit ${dto.creditId} for ${dto.buyerPublicKey}`,
     );
+
     const args = [
       nativeToScVal(dto.buyerPublicKey, { type: 'address' }),
       nativeToScVal(Buffer.from(dto.creditId, 'hex'), { type: 'bytes' }),
@@ -65,6 +73,7 @@ export class RetirementService {
       nativeToScVal(dto.reason, { type: 'string' }),
       nativeToScVal(this.registryContractId, { type: 'address' }),
     ];
+
     const signer = this.keypairService.getAdminKeypair();
     const response = await this.stellarService.invokeContract(
       this.retirementContractId,
@@ -72,6 +81,7 @@ export class RetirementService {
       args,
       signer,
     );
+
     const rv = (response as unknown as Record<string, unknown>).returnValue;
     const retirementId = rv
       ? Buffer.from(

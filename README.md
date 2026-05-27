@@ -16,6 +16,8 @@ CarbonChain is a Soroban-native platform for issuing, trading, and retiring toke
 - Session-based audit trail for all credit lifecycle operations
 - Replay attack protection on all contract state transitions
 - Fractional credits (0.1 tonne resolution via i128 storage)
+  - Unit convention: **1 tonne = 1,000,000 units**, minimum unit = 100,000 (= 0.1 tonne)
+  - All `tonnes` values must be a positive multiple of 100,000; non-multiples are rejected
 - Anchor info discovery for SEP-10 authenticated interactions
 - Health monitoring for registered verifier nodes
 - Event emission for all state changes

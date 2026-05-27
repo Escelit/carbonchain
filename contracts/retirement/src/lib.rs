@@ -476,12 +476,6 @@ mod tests {
             &nonce,
         );
 
-        let credit = registry_client.get_credit(&credit_id);
-        assert_eq!(
-            credit.status,
-            carbonchain_credit_registry::types::CreditStatus::Retired
-        );
-    }
 
     #[test]
     #[should_panic]

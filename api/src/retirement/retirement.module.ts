@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { RetirementService } from './retirement.service';
 import { RetirementController } from './retirement.controller';
+import { CertificateService } from './certificate.service';
 import { StellarModule } from '../stellar/stellar.module';
 import { AuthModule } from '../auth/auth.module';
 import { InMemoryRetirementRepository, RETIREMENT_REPOSITORY } from './retirement.repository';
@@ -16,3 +17,4 @@ import { InMemoryRetirementRepository, RETIREMENT_REPOSITORY } from './retiremen
   exports: [RetirementService],
 })
 export class RetirementModule {}
+
