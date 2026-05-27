@@ -1,9 +1,11 @@
 #![no_std]
 pub mod types;
+pub mod errors;
 
 use crate::types::{DataKey, RetirementRecord, MIN_TTL, TTL_THRESHOLD};
+use crate::errors::RetirementError;
 use soroban_sdk::{
-    contract, contractimpl, contracterror, symbol_short,
+    contract, contractimpl, symbol_short,
     Address, BytesN, Env, String, Symbol, Vec,
     IntoVal,
 };

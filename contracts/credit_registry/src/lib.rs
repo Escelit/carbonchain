@@ -1076,6 +1076,35 @@ mod tests {
     }
 
     #[test]
+    fn test_list_credits_by_status() {
+        let (env, client, admin, verifier) = setup();
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+        
+        // Submit two credits
+        let issuer = Address::generate(&env);
+        let id1 = submit_test_credit(&env, &client, &issuer);
+        let id2 = submit_test_credit(&env, &client, &issuer);
+        
+        // Both should be Pending
+        let pending = client.list_credits_by_status(&CreditStatus::Pending);
+        assert_eq!(pending.len(), 2);
+        
+        // Approve one
+        let vnonce = client.get_nonce(&verifier);
+        client.approve_and_mint(&verifier, &id1, &vnonce);
+        
+        // Now one should be Active, one Pending
+        let active = client.list_credits_by_status(&CreditStatus::Active);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(0).unwrap(), id1);
+        
+        let pending = client.list_credits_by_status(&CreditStatus::Pending);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.get(0).unwrap(), id2);
+    }
+
+    #[test]
     fn test_non_verifier_cannot_approve() {
         let (env, client, _, _) = setup();
         let issuer = Address::generate(&env);
