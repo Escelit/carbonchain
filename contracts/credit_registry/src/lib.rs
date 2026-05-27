@@ -574,6 +574,24 @@ mod tests {
     }
 
     #[test]
+    fn test_get_credit_returns_error_for_missing_credit() {
+        let (env, client, _, _) = setup();
+        let fake_id = BytesN::from_array(&env, &[0u8; 32]);
+        let result = client.try_get_credit(&fake_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_credit_returns_credit_metadata() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let credit = client.get_credit(&id);
+        assert_eq!(credit.tonnes, 1_000_000);
+        assert_eq!(credit.status, CreditStatus::Pending);
+    }
+
+    #[test]
     fn test_list_credits_by_project() {
         let (env, client, _, _) = setup();
         let issuer = Address::generate(&env);
@@ -635,11 +653,13 @@ mod tests {
     #[test]
     fn test_pause_blocks_approve_and_mint() {
         let (env, client, admin, verifier) = setup();
-        client.register_verifier(&admin, &verifier);
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
         let issuer = Address::generate(&env);
         let id = submit_test_credit(&env, &client, &issuer);
         client.pause(&admin);
-        assert!(client.try_approve_and_mint(&verifier, &id).is_err());
+        let vnonce = client.get_nonce(&verifier);
+        assert!(client.try_approve_and_mint(&verifier, &id, &vnonce).is_err());
     }
 
     #[test]
