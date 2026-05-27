@@ -41,6 +41,7 @@ pub enum MarketplaceError {
     CreditNotActive = 119,
     NotInitialized  = 120,
     ContractPaused  = 121,
+    Overflow        = 122,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
@@ -112,7 +113,7 @@ impl Marketplace {
             return Err(MarketplaceError::CreditNotActive);
         }
 
-        let offer_id = Self::next_id(&env);
+        let offer_id = Self::next_id(&env)?;
         let offer = Offer {
             seller: seller.clone(),
             credit_id,
@@ -210,11 +211,12 @@ impl Marketplace {
 
     // ── Internal ─────────────────────────────────────────────────────────────
 
-    fn next_id(env: &Env) -> u64 {
+    fn next_id(env: &Env) -> Result<u64, MarketplaceError> {
         let id: u64 = env.storage().persistent().get(&DataKey::OfferCount).unwrap_or(0u64);
-        env.storage().persistent().set(&DataKey::OfferCount, &(id + 1));
+        let next_id = id.checked_add(1).ok_or(MarketplaceError::Overflow)?;
+        env.storage().persistent().set(&DataKey::OfferCount, &next_id);
         env.storage().persistent().extend_ttl(&DataKey::OfferCount, TTL_THRESHOLD, MIN_TTL);
-        id
+        Ok(id)
     }
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), MarketplaceError> {
@@ -415,5 +417,19 @@ mod tests {
         let (client, _, _, _, _) = setup_with_registry(&env);
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
+    }
+
+    #[test]
+    fn test_offer_count_overflow_protection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        
+        // Set offer count to max value - 1
+        env.storage().persistent().set(&DataKey::OfferCount, &(u64::MAX));
+        
+        // Next offer creation should fail with overflow
+        let result = client.try_create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        assert!(result.is_err());
     }
 }
