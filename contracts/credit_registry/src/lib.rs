@@ -20,25 +20,22 @@ use crate::storage::{
     increment_approval_count, increment_dispute_count,
     get_issuers, set_issuers, is_issuer as storage_is_issuer,
     get_methodologies, set_methodologies, is_methodology_valid,
+    get_verifier_pending_count, increment_verifier_pending, decrement_verifier_pending,
+    set_credit_assigned_verifier, get_credit_assigned_verifier, remove_credit_assigned_verifier,
+    get_required_approvals, set_required_approvals,
+    get_credit_approvals, set_credit_approvals, remove_credit_approvals,
+    set_session, get_session, get_session_op_count, increment_session_op_count,
+    append_audit_log, get_audit_log,
 };
-use crate::types::{CreditMetadata, CreditStatus, DataKey, ServiceType, VerifierReputation, Methodology};
+use crate::types::{
+    CreditMetadata, CreditStatus, DataKey, ServiceType, VerifierReputation, Methodology,
+    ProjectMetadata, Session, AuditLogEntry,
+};
 use crate::events::{
     credit_submitted, credit_minted, verifier_added, verifier_removed,
     contract_paused, contract_unpaused, credit_transferred, credit_split, batch_retired,
 };
 
-fn get_nonce(env: &Env, addr: &Address) -> u64 {
-    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
-}
-
-fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
-    let current = get_nonce(env, addr);
-    if current != expected { return false; }
-    let key = DataKey::Nonce(addr.clone());
-    env.storage().persistent().set(&key, &(current + 1));
-    env.storage().persistent().extend_ttl(&key, storage::TTL_THRESHOLD, storage::MIN_TTL);
-    true
-}
 
 #[cfg(not(feature = "library"))]
 #[contract]
@@ -51,17 +48,25 @@ impl CreditRegistry {
 
     /// Initialise the registry. Must be called exactly once.
     ///
+    /// `required_approvals` sets how many distinct verifier signatures are needed before
+    /// a credit transitions from Pending → Active. Must be ≥ 1.
+    ///
     /// # Errors
     /// - [`CarbonChainError::AlreadyInitialized`] — contract has already been initialised.
-    pub fn initialize(env: Env, admin: Address, retirement_contract: Address) -> Result<(), CarbonChainError> {
+    /// - [`CarbonChainError::InvalidApprovalThreshold`] — `required_approvals` is zero.
+    pub fn initialize(env: Env, admin: Address, retirement_contract: Address, required_approvals: u32) -> Result<(), CarbonChainError> {
         if has_admin(&env) {
             return Err(CarbonChainError::AlreadyInitialized);
+        }
+        if required_approvals == 0 {
+            return Err(CarbonChainError::InvalidApprovalThreshold);
         }
         // Validate that admin is a legitimate, authorised address.
         // require_auth() will panic for zero/invalid addresses in the Soroban VM.
         admin.require_auth();
         set_admin(&env, &admin);
         set_retirement_contract(&env, &retirement_contract);
+        set_required_approvals(&env, required_approvals);
         Ok(())
     }
 
@@ -139,6 +144,7 @@ impl CreditRegistry {
     /// - [`CarbonChainError::Unauthorized`] — caller is not the admin.
     /// - [`CarbonChainError::InvalidNonce`] — `nonce` does not match the current admin nonce.
     /// - [`CarbonChainError::VerifierNotFound`] — `verifier` is not in the registered set.
+    /// - [`CarbonChainError::VerifierHasPendingCredits`] — `verifier` still has credits in Pending status.
     pub fn remove_verifier(env: Env, admin: Address, verifier: Address, nonce: u64) -> Result<(), CarbonChainError> {
         let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
         admin.require_auth();
@@ -150,6 +156,11 @@ impl CreditRegistry {
         }
         if !is_verifier(&env, &verifier) {
             return Err(CarbonChainError::VerifierNotFound);
+        }
+        // Block removal if the verifier still has pending credits assigned to them.
+        let pending = get_verifier_pending_count(&env, &verifier);
+        if pending > 0 {
+            return Err(CarbonChainError::VerifierHasPendingCredits);
         }
         let old = get_verifiers(&env);
         let mut new_list: Vec<Address> = Vec::new(&env);
@@ -345,11 +356,23 @@ impl CreditRegistry {
 
         set_credit(&env, &id, &metadata);
         add_credit_to_project(&env, &project_id, &id);
+
+        // Issue 1: track pending credits per verifier so remove_verifier can block removal.
+        // We distribute the pending credit across ALL registered verifiers so each one's
+        // count reflects that they may be called upon to approve it.
+        let verifiers = get_verifiers(&env);
+        for v in verifiers.iter() {
+            increment_verifier_pending(&env, &v);
+        }
+
         credit_submitted(&env, issuer, project_id, id.clone(), tonnes);
 
         Ok(id)
     }
 
+    /// Issue 2: Multi-sig approval. Each registered verifier calls this once per credit.
+    /// The credit transitions to Active only when `required_approvals` distinct verifiers
+    /// have approved it. Duplicate approvals from the same verifier are rejected.
     pub fn approve_and_mint(env: Env, verifier: Address, credit_id: BytesN<32>, nonce: u64) -> Result<(), CarbonChainError> {
         if is_paused(&env) {
             return Err(CarbonChainError::ContractPaused);
@@ -365,11 +388,45 @@ impl CreditRegistry {
         if credit.status != CreditStatus::Pending {
             return Err(CarbonChainError::InvalidStatusTransition);
         }
-        credit.status = CreditStatus::Active;
-        set_credit(&env, &credit_id, &credit);
+
+        // Check this verifier hasn't already approved this credit.
+        let mut approvals = get_credit_approvals(&env, &credit_id);
+        if approvals.contains(&verifier) {
+            return Err(CarbonChainError::AlreadyApproved);
+        }
+        approvals.push_back(verifier.clone());
+        set_credit_approvals(&env, &credit_id, &approvals);
         increment_approval_count(&env, &verifier);
-        credit_minted(&env, verifier, credit_id);
+
+        let required = get_required_approvals(&env);
+        if approvals.len() >= required {
+            // Threshold reached — mint the credit.
+            credit.status = CreditStatus::Active;
+            set_credit(&env, &credit_id, &credit);
+            remove_credit_approvals(&env, &credit_id);
+
+            // Decrement pending count for all verifiers now that this credit is resolved.
+            let verifiers = get_verifiers(&env);
+            for v in verifiers.iter() {
+                decrement_verifier_pending(&env, &v);
+            }
+
+            credit_minted(&env, verifier, credit_id);
+        } else {
+            // Not yet at threshold — save updated approvals list, no status change.
+            set_credit(&env, &credit_id, &credit);
+        }
         Ok(())
+    }
+
+    /// Returns the current approval count for a pending credit.
+    pub fn get_approval_count(env: Env, credit_id: BytesN<32>) -> u32 {
+        get_credit_approvals(&env, &credit_id).len()
+    }
+
+    /// Returns the required number of approvals to mint a credit.
+    pub fn get_required_approvals(env: Env) -> u32 {
+        get_required_approvals(&env)
     }
 
     pub fn flag_credit(env: Env, verifier: Address, credit_id: BytesN<32>, reason: String, nonce: u64) -> Result<(), CarbonChainError> {
@@ -387,9 +444,17 @@ impl CreditRegistry {
         if credit.status == CreditStatus::Retired || credit.status == CreditStatus::Flagged {
             return Err(CarbonChainError::InvalidStatusTransition);
         }
+        let was_pending = credit.status == CreditStatus::Pending;
         credit.status = CreditStatus::Flagged;
         set_credit(&env, &credit_id, &credit);
         increment_dispute_count(&env, &verifier);
+        // Decrement pending count — this credit is no longer awaiting approval.
+        if was_pending {
+            let verifiers = get_verifiers(&env);
+            for v in verifiers.iter() {
+                decrement_verifier_pending(&env, &v);
+            }
+        }
         crate::events::credit_flagged(&env, credit_id, reason);
         Ok(())
     }
@@ -852,21 +917,121 @@ impl CreditRegistry {
         env.events().publish((symbol_short!("merged"),), (merged_id.clone(), credit_ids.len() as u32));
         Ok(merged_id)
     }
+
+    // ── Issue 3: Contract Upgrade Mechanism ──────────────────────────────────
+
+    /// Upgrade the contract WASM to a new hash. Only the admin may call this.
+    ///
+    /// After this call the contract executes the new WASM on the next invocation.
+    /// The admin must supply a valid nonce to prevent replay attacks.
+    ///
+    /// # Errors
+    /// - [`CarbonChainError::NotInitialized`] — contract has not been initialised.
+    /// - [`CarbonChainError::Unauthorized`] — caller is not the admin.
+    /// - [`CarbonChainError::InvalidNonce`] — `nonce` does not match the current admin nonce.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ── Issue 4: Session Management ──────────────────────────────────────────
+
+    /// Create a new session for grouping related credit operations.
+    /// Returns a deterministic session ID derived from the initiator address and ledger timestamp.
+    pub fn create_session(env: Env, initiator: Address) -> Result<BytesN<32>, CarbonChainError> {
+        initiator.require_auth();
+        // Derive a unique session ID from initiator + current timestamp + session nonce.
+        let session_nonce: u64 = env.storage().instance().get(&DataKey::AuditLogCount).unwrap_or(0u64);
+        let mut preimage = initiator.clone().to_xdr(&env);
+        preimage.append(&env.ledger().timestamp().to_xdr(&env));
+        preimage.append(&session_nonce.to_xdr(&env));
+        let session_id: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+        let session = Session {
+            initiator: initiator.clone(),
+            created_at: env.ledger().timestamp(),
+            operation_count: 0,
+        };
+        set_session(&env, &session_id, &session);
+        env.events().publish((symbol_short!("sess_new"), initiator), session_id.clone());
+        Ok(session_id)
+    }
+
+    /// Submit a credit within an existing session. Records an audit log entry and
+    /// increments the session operation count.
+    ///
+    /// # Errors
+    /// - [`CarbonChainError::SessionNotFound`] — no session exists for `session_id`.
+    /// - All errors from [`submit_credit`].
+    pub fn submit_credit_with_session(
+        env: Env,
+        session_id: BytesN<32>,
+        issuer: Address,
+        project_id: String,
+        vintage_year: u32,
+        methodology: String,
+        geography: String,
+        tonnes: i128,
+        ipfs_hash: String,
+        nonce: u64,
+    ) -> Result<BytesN<32>, CarbonChainError> {
+        // Verify session exists.
+        get_session(&env, &session_id).ok_or(CarbonChainError::SessionNotFound)?;
+
+        // Delegate to the standard submit_credit logic.
+        let credit_id = Self::submit_credit(
+            env.clone(),
+            issuer.clone(),
+            project_id.clone(),
+            vintage_year,
+            methodology,
+            geography,
+            tonnes,
+            ipfs_hash,
+            nonce,
+        )?;
+
+        // Record audit log entry.
+        let entry = AuditLogEntry {
+            session_id: session_id.clone(),
+            credit_id: credit_id.clone(),
+            actor: issuer,
+            action: String::from_str(&env, "submit_credit"),
+            timestamp: env.ledger().timestamp(),
+        };
+        append_audit_log(&env, &entry);
+        increment_session_op_count(&env, &session_id);
+
+        Ok(credit_id)
+    }
+
+    /// Returns the number of operations recorded in a session.
+    ///
+    /// # Errors
+    /// - [`CarbonChainError::SessionNotFound`] — no session exists for `session_id`.
+    pub fn get_session_operation_count(env: Env, session_id: BytesN<32>) -> Result<u64, CarbonChainError> {
+        get_session(&env, &session_id).ok_or(CarbonChainError::SessionNotFound)?;
+        Ok(get_session_op_count(&env, &session_id))
+    }
+
+    /// Fetch an audit log entry by its ID.
+    ///
+    /// # Errors
+    /// - [`CarbonChainError::CreditNotFound`] — no audit log entry exists for `log_id`.
+    pub fn get_audit_log(env: Env, log_id: BytesN<32>) -> Result<AuditLogEntry, CarbonChainError> {
+        get_audit_log(&env, &log_id).ok_or(CarbonChainError::CreditNotFound)
+    }
 }
 
-// ── Helper functions ─────────────────────────────────────────────────────────
-
-fn get_nonce(env: &Env, addr: &Address) -> u64 {
-    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
-}
-
-fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
-    let current = get_nonce(env, addr);
-    if current != expected { return false; }
-    let key = DataKey::Nonce(addr.clone());
-    env.storage().persistent().set(&key, &(current + 1));
-    true
-}
+// ── Helper functions removed — get_nonce and consume_nonce live in storage.rs ──
 
 #[cfg(test)]
 mod tests {
