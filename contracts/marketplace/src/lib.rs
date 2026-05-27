@@ -30,6 +30,8 @@ pub enum DataKey {
     SellerOffers(Address),
     Admin,
     Paused,
+    FeeBps,
+    FeeRecipient,
     EscrowedAmount(u64),  // Track escrowed tokens per offer
     Nonce(Address),
     MinPrice,
