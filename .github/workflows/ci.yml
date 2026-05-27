@@ -37,7 +37,7 @@ jobs:
           cache: "npm"
           cache-dependency-path: api/package-lock.json
       - name: Install Dependencies
-        run: cd api && npm ci
+        run: cd api && npm ci --legacy-peer-deps
       - name: Lint
         run: cd api && npm run lint
       - name: Build

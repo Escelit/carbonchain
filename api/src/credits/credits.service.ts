@@ -1,15 +1,17 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
 import { StellarKeypairService } from '../stellar/stellar-keypair.service';
 import { scValToNative, nativeToScVal } from '@stellar/stellar-sdk';
 import { CreditMetadata, CreditStatus } from '../shared';
 import { CreditEntity } from './credit.entity';
-import {
+import type {
   ICreditRepository,
-  CREDIT_REPOSITORY,
   PageResult,
+} from './credit.repository';
+import {
+  CREDIT_REPOSITORY,
 } from './credit.repository';
 
 export class IssueCreditDto {
@@ -232,6 +234,21 @@ export class CreditsService {
       ipfs_hash: String(native.ipfs_hash),
       status: native.status as CreditStatus,
       issued_at: Number(native.issued_at),
+    };
+  }
+
+  private entityToMetadata(entity: CreditEntity): CreditMetadata {
+    return {
+      id: entity.id,
+      project_id: entity.projectId,
+      issuer: entity.issuer,
+      vintage_year: entity.vintageYear,
+      methodology: entity.methodology,
+      geography: entity.geography,
+      tonnes: entity.tonnes,
+      ipfs_hash: entity.ipfsHash,
+      status: entity.status,
+      issued_at: entity.issuedAt,
     };
   }
 }

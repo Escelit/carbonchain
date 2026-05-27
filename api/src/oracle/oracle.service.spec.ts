@@ -20,6 +20,9 @@ function makeSignature(projectId: string, tonnes: string, secret = 'testsecret')
   return createHmac('sha256', secret).update(`${projectId}:${tonnes}`).digest('hex');
 }
 
+// Valid Stellar G-address (56 chars, base32)
+const VALID_ORACLE_KEY = 'GCRZUKNU2J5GLSYTZR4OLO7OBJJVHSMVBGG7IVUZU5FXMFHUDCLDGQJX';
+
 describe('OracleService', () => {
   let service: OracleService;
 
@@ -39,7 +42,7 @@ describe('OracleService', () => {
 
   it('rejects invalid signature', async () => {
     const dto: MrvWebhookDto = {
-      oraclePublicKey: 'GORACLE',
+      oraclePublicKey: VALID_ORACLE_KEY,
       projectId: 'PROJ-001',
       tonnesSequestered: '1000000',
       signature: 'badhex',
@@ -50,7 +53,7 @@ describe('OracleService', () => {
   it('forwards valid data to contract and returns anomaly flag', async () => {
     mockStellarService.invokeContract.mockResolvedValue({ returnValue: null });
     const dto: MrvWebhookDto = {
-      oraclePublicKey: 'GORACLE',
+      oraclePublicKey: VALID_ORACLE_KEY,
       projectId: 'PROJ-001',
       tonnesSequestered: '1000000',
       signature: makeSignature('PROJ-001', '1000000'),

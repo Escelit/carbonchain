@@ -11,7 +11,7 @@ export class ProjectsController {
 
   @ApiOperation({ summary: 'Register a new project' })
   @Post()
-  create(@Body() data: CreateProjectDto): ProjectProfile {
+  async create(@Body() data: CreateProjectDto): Promise<ProjectProfile> {
     return this.projectsService.createProject(data);
   }
 
