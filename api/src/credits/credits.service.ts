@@ -1,10 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
 import { StellarKeypairService } from '../stellar/stellar-keypair.service';
 import { scValToNative, nativeToScVal } from '@stellar/stellar-sdk';
 import { CreditMetadata, CreditStatus } from '../shared';
+import { CreditEntity } from './credit.entity';
+import {
+  ICreditRepository,
+  CREDIT_REPOSITORY,
+  PageResult,
+} from './credit.repository';
 
 export class IssueCreditDto {
   issuerPublicKey: string;
@@ -25,6 +31,7 @@ export class CreditsService {
     private stellarService: StellarService,
     private configService: ConfigService,
     private keypairService: StellarKeypairService,
+    @Inject(CREDIT_REPOSITORY) private readonly creditRepo: ICreditRepository,
   ) {
     this.contractId =
       this.configService.get<string>('CREDIT_REGISTRY_CONTRACT_ID') || '';
@@ -56,10 +63,30 @@ export class CreditsService {
           ) as Uint8Array,
         ).toString('hex')
       : 'unknown';
+
+    // Persist to off-chain index
+    const entity = new CreditEntity();
+    entity.id = creditId;
+    entity.projectId = dto.projectId;
+    entity.issuer = dto.issuerPublicKey;
+    entity.vintageYear = dto.vintageYear;
+    entity.methodology = dto.methodology;
+    entity.geography = dto.geography;
+    entity.tonnes = dto.tonnes;
+    entity.ipfsHash = dto.ipfsHash;
+    entity.status = CreditStatus.Pending;
+    entity.issuedAt = Math.floor(Date.now() / 1000);
+    await this.creditRepo.save(entity);
+
     return { creditId };
   }
 
   async getCredit(creditId: string): Promise<CreditMetadata> {
+    // Try off-chain index first
+    const cached = await this.creditRepo.findById(creditId);
+    if (cached) return this.entityToMetadata(cached);
+
+    // Fall back to on-chain read
     try {
       this.logger.log(`Fetching credit metadata for ID: ${creditId}`);
       const args = [
@@ -84,24 +111,35 @@ export class CreditsService {
     }
   }
 
-  async listCreditsByProject(projectId: string): Promise<string[]> {
-    try {
-      this.logger.log(`Listing credits for project: ${projectId}`);
-      const args = [nativeToScVal(projectId, { type: 'string' })];
-      const retval = await this.stellarService.readContract(
-        this.contractId,
-        'list_credits_by_project',
-        args,
-      );
-      if (!retval) return [];
-      const native = scValToNative(retval) as Buffer[];
-      return native.map((buf) => buf.toString('hex'));
-    } catch (error: unknown) {
-      this.logger.error(
-        `Failed to list credits for project ${projectId}: ${(error as Error).message}`,
-      );
-      return [];
-    }
+  async listCredits(page = 1, limit = 20): Promise<PageResult<CreditMetadata>> {
+    const result = await this.creditRepo.findAll(page, limit);
+    return {
+      ...result,
+      data: result.data.map((e) => this.entityToMetadata(e)),
+    };
+  }
+
+  async listCreditsByProject(projectId: string, page = 1, limit = 20): Promise<PageResult<CreditMetadata>> {
+    const result = await this.creditRepo.findByProject(projectId, page, limit);
+    return {
+      ...result,
+      data: result.data.map((e) => this.entityToMetadata(e)),
+    };
+  }
+
+  private entityToMetadata(e: CreditEntity): CreditMetadata {
+    return {
+      id: e.id,
+      project_id: e.projectId,
+      issuer: e.issuer,
+      vintage_year: e.vintageYear,
+      methodology: e.methodology,
+      geography: e.geography,
+      tonnes: e.tonnes,
+      ipfs_hash: e.ipfsHash,
+      status: e.status,
+      issued_at: e.issuedAt,
+    };
   }
 
   private mapToCreditMetadata(id: string, native: any): CreditMetadata {

@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { VerifiersModule } from './verifiers/verifiers.module';
 import { RetirementModule } from './retirement/retirement.module';
 import { MarketplaceModule } from './marketplace/marketplace.module';
+import { OracleModule } from './oracle/oracle.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { MarketplaceModule } from './marketplace/marketplace.module';
     VerifiersModule,
     RetirementModule,
     MarketplaceModule,
+    OracleModule,
   ],
   controllers: [AppController],
   providers: [AppService],

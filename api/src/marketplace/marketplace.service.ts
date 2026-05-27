@@ -88,6 +88,22 @@ export class MarketplaceService {
     );
   }
 
+  async buyOffer(buyerPublicKey: string, offerId: number): Promise<void> {
+    const nativeTokenId = this.configService.get<string>('NATIVE_TOKEN_CONTRACT_ID', '');
+    const args = [
+      nativeToScVal(buyerPublicKey, { type: 'address' }),
+      nativeToScVal(offerId, { type: 'u64' }),
+      nativeToScVal(nativeTokenId, { type: 'address' }),
+    ];
+    const signer = this.keypairService.getAdminKeypair();
+    await this.stellarService.invokeContract(
+      this.contractId,
+      'buy_offer',
+      args,
+      signer,
+    );
+  }
+
   private mapOffer(id: number, n: any): Offer {
     return {
       id: String(id),

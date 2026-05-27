@@ -1,10 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
 import { StellarKeypairService } from '../stellar/stellar-keypair.service';
 import { nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
 import { RetirementRecord } from '../shared';
+import { RetirementEntity } from './retirement.entity';
+import {
+  IRetirementRepository,
+  RETIREMENT_REPOSITORY,
+} from './retirement.repository';
+import { PageResult } from '../credits/credit.repository';
 
 export class RetireDto {
   buyerPublicKey: string;
@@ -23,6 +29,7 @@ export class RetirementService {
     private readonly stellarService: StellarService,
     private readonly keypairService: StellarKeypairService,
     private readonly configService: ConfigService,
+    @Inject(RETIREMENT_REPOSITORY) private readonly retirementRepo: IRetirementRepository,
   ) {
     this.retirementContractId = this.configService.get<string>(
       'RETIREMENT_CONTRACT_ID',
@@ -60,10 +67,27 @@ export class RetirementService {
           ) as Uint8Array,
         ).toString('hex')
       : 'unknown';
+
+    // Persist to off-chain index
+    const entity = new RetirementEntity();
+    entity.id = retirementId;
+    entity.creditId = dto.creditId;
+    entity.buyer = dto.buyerPublicKey;
+    entity.tonnesRetired = dto.tonnes;
+    entity.reason = dto.reason;
+    entity.retiredAt = Math.floor(Date.now() / 1000);
+    entity.txHash = '';
+    await this.retirementRepo.save(entity);
+
     return { retirementId };
   }
 
   async getRetirement(retirementId: string): Promise<RetirementRecord> {
+    // Try off-chain index first
+    const cached = await this.retirementRepo.findById(retirementId);
+    if (cached) return this.entityToRecord(cached);
+
+    // Fall back to on-chain read
     const args = [
       nativeToScVal(Buffer.from(retirementId, 'hex'), { type: 'bytes' }),
     ];
@@ -87,15 +111,25 @@ export class RetirementService {
     };
   }
 
-  async getRetirementsByAccount(account: string): Promise<string[]> {
-    const args = [nativeToScVal(account, { type: 'address' })];
-    const retval = await this.stellarService.readContract(
-      this.retirementContractId,
-      'get_retirements_by_account',
-      args,
-    );
-    if (!retval) return [];
-    const native = scValToNative(retval) as Uint8Array[];
-    return native.map((b) => Buffer.from(b).toString('hex'));
+  async listRetirements(page = 1, limit = 20): Promise<PageResult<RetirementRecord>> {
+    const result = await this.retirementRepo.findAll(page, limit);
+    return { ...result, data: result.data.map((e) => this.entityToRecord(e)) };
+  }
+
+  async getRetirementsByAccount(account: string, page = 1, limit = 20): Promise<PageResult<RetirementRecord>> {
+    const result = await this.retirementRepo.findByBuyer(account, page, limit);
+    return { ...result, data: result.data.map((e) => this.entityToRecord(e)) };
+  }
+
+  private entityToRecord(e: RetirementEntity): RetirementRecord {
+    return {
+      id: e.id,
+      credit_id: e.creditId,
+      buyer: e.buyer,
+      tonnes_retired: e.tonnesRetired,
+      reason: e.reason,
+      retired_at: e.retiredAt,
+      tx_hash: e.txHash,
+    };
   }
 }

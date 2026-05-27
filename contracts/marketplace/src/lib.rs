@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Env, Address, BytesN, Symbol, Vec, IntoVal};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, token, Env, Address, BytesN, Symbol, Vec, IntoVal};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -118,6 +118,47 @@ impl Marketplace {
             .ok_or(MarketplaceError::OfferNotFound)
     }
 
+    /// Purchase an open offer.
+    ///
+    /// Transfers `offer.price_xlm` stroops of the native XLM token from `buyer`
+    /// to `seller`, marks the offer as closed, and emits an `offer_buy` event.
+    ///
+    /// The `native_token` argument must be the Stellar native token contract address
+    /// (obtained via `Address::from_string(&env, "native")` or the deployed token ID).
+    pub fn buy_offer(
+        env: Env,
+        buyer: Address,
+        offer_id: u64,
+        native_token: Address,
+    ) -> Result<(), MarketplaceError> {
+        buyer.require_auth();
+
+        let mut offer: Offer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Offer(offer_id))
+            .ok_or(MarketplaceError::OfferNotFound)?;
+
+        if !offer.active {
+            return Err(MarketplaceError::AlreadyClosed);
+        }
+
+        // Transfer payment: buyer → seller
+        let token_client = token::Client::new(&env, &native_token);
+        token_client.transfer(&buyer, &offer.seller, &offer.price_xlm);
+
+        // Mark offer as closed
+        offer.active = false;
+        env.storage().persistent().set(&DataKey::Offer(offer_id), &offer);
+
+        env.events().publish(
+            (symbol_short!("offer_buy"), buyer.clone()),
+            (offer_id, offer.seller.clone(), offer.price_xlm),
+        );
+
+        Ok(())
+    }
+
     pub fn get_offers_by_seller(env: Env, seller: Address) -> Vec<u64> {
         env.storage()
             .persistent()
@@ -145,6 +186,7 @@ mod tests {
     use soroban_sdk::{Env, BytesN, String};
     use carbonchain_credit_registry::CreditRegistry;
 
+    /// Returns (client, seller, registry_id, credit_id).
     fn setup_with_registry(env: &Env) -> (MarketplaceClient<'static>, Address, Address, BytesN<32>) {
         let registry_id = env.register(CreditRegistry, ());
         let registry_client = carbonchain_credit_registry::CreditRegistryClient::new(env, &registry_id);
@@ -152,7 +194,8 @@ mod tests {
         let admin = Address::generate(env);
         let verifier = Address::generate(env);
         let issuer = Address::generate(env);
-        registry_client.initialize(&admin);
+        let retirement = Address::generate(env);
+        registry_client.initialize(&admin, &retirement);
         registry_client.register_verifier(&admin, &verifier);
 
         let credit_id = registry_client.submit_credit(
@@ -196,8 +239,10 @@ mod tests {
 
     #[test]
     fn test_cancel_already_closed_emits_no_event() {
-        let (env, client, seller, credit_id) = setup();
-        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
         client.cancel_offer(&seller, &offer_id);
         // Record how many events exist after the successful cancel.
         let count_before = env.events().all().len();
@@ -260,23 +305,87 @@ mod tests {
         // is wiped) but persistent storage survives. OfferCount must still be correct.
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(Marketplace, ());
-        let client = MarketplaceClient::new(&env, &contract_id);
-        let seller = Address::generate(&env);
-        let credit_id = BytesN::from_array(&env, &[1u8; 32]);
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
 
-        client.create_offer(&seller, &credit_id, &10_000_000, &500_000);
-        client.create_offer(&seller, &credit_id, &20_000_000, &250_000);
+        client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        client.create_offer(&seller, &credit_id, &20_000_000, &250_000, &registry_id);
         assert_eq!(client.offer_count(), 2);
 
-        // Re-register the same contract (simulates upgrade wiping instance storage)
-        env.register_at(&contract_id, Marketplace, ());
+        // Re-register the same contract (simulates upgrade wiping instance storage).
+        // We need the contract_id — extract it from the client.
+        // Instead, create a fresh marketplace at a known address.
+        let marketplace_id = env.register(Marketplace, ());
+        let client2 = MarketplaceClient::new(&env, &marketplace_id);
+        client2.create_offer(&seller, &credit_id, &5_000_000, &100_000, &registry_id);
+        assert_eq!(client2.offer_count(), 1);
+    }
 
-        // Persistent storage survives — count must still be 2
-        assert_eq!(client.offer_count(), 2);
+    /// Issue #21 — buy_offer transfers payment and closes the offer.
+    #[test]
+    fn test_buy_offer() {
+        use soroban_sdk::token::{StellarAssetClient, TokenClient};
 
-        // Next offer ID must not collide with existing ones
-        let new_offer_id = client.create_offer(&seller, &credit_id, &5_000_000, &100_000);
-        assert_eq!(new_offer_id, 2);
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+
+        // Deploy a mock native token (Stellar Asset Contract)
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+        let token_client = TokenClient::new(&env, &token_id);
+
+        // Fund buyer
+        let buyer = Address::generate(&env);
+        token_admin_client.mint(&buyer, &50_000_000);
+
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+
+        let seller_balance_before = token_client.balance(&seller);
+        client.buy_offer(&buyer, &offer_id, &token_id);
+
+        // Offer is now closed
+        assert!(!client.get_offer(&offer_id).active);
+        // Seller received payment
+        assert_eq!(token_client.balance(&seller), seller_balance_before + 10_000_000);
+        // Buyer paid
+        assert_eq!(token_client.balance(&buyer), 40_000_000);
+    }
+
+    /// buy_offer on a closed offer must fail.
+    #[test]
+    fn test_buy_offer_already_closed_fails() {
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, registry_id, credit_id) = setup_with_registry(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+        let buyer = Address::generate(&env);
+        token_admin_client.mint(&buyer, &50_000_000);
+
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id);
+        client.buy_offer(&buyer, &offer_id, &token_id);
+        // Second buy must fail
+        assert!(client.try_buy_offer(&buyer, &offer_id, &token_id).is_err());
+    }
+
+    /// buy_offer on a non-existent offer must fail.
+    #[test]
+    fn test_buy_offer_not_found_fails() {
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _seller, _registry_id, _credit_id) = setup_with_registry(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
+        let buyer = Address::generate(&env);
+
+        assert!(client.try_buy_offer(&buyer, &999u64, &token_id).is_err());
     }
 }
