@@ -17,4 +17,6 @@ pub enum CarbonChainError {
     InvalidTonnes = 110,
     InvalidAdmin = 111,
     ContractPaused = 112,
+    InvalidNonce = 113,
+    NoPendingAdmin = 114,
 }

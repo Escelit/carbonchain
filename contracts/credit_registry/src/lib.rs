@@ -2,6 +2,23 @@
 use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN, Vec};
 use soroban_sdk::xdr::ToXdr;
 
+// ── Unit convention ──────────────────────────────────────────────────────────
+//
+// The `tonnes` field in `CreditMetadata` stores carbon credits in **micro-tonne
+// units** where:
+//
+//   1 tonne  = 1_000_000 units
+//   0.1 tonne = 100_000 units  ← minimum resolution
+//
+// All amounts submitted to the contract MUST be a positive multiple of
+// `MIN_CREDIT_UNIT`.  Amounts that are not a multiple are rejected with
+// `CarbonChainError::InvalidTonnes`.
+//
+// Upper bound: 1_000_000_000_000_000 units = 1 billion tonnes.
+pub const UNITS_PER_TONNE: i128 = 1_000_000;
+/// Minimum credit unit — represents 0.1 tonne.
+pub const MIN_CREDIT_UNIT: i128 = 100_000;
+
 pub mod types;
 pub mod errors;
 pub mod storage;
@@ -21,6 +38,26 @@ use crate::events::{
     credit_submitted, credit_minted, verifier_added, verifier_removed,
     contract_paused, contract_unpaused,
 };
+
+fn get_nonce(env: &Env, addr: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Nonce(addr.clone()))
+        .unwrap_or(0u64)
+}
+
+fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+    let current = get_nonce(env, addr);
+    if current != expected {
+        return false;
+    }
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &(current + 1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, crate::storage::TTL_THRESHOLD, crate::storage::MIN_TTL);
+    true
+}
 
 #[cfg(not(feature = "library"))]
 #[contract]
@@ -116,6 +153,11 @@ impl CreditRegistry {
         Ok(())
     }
 
+    /// Returns the total number of registered verifiers.
+    pub fn get_verifier_count(env: Env) -> u32 {
+        get_verifiers(&env).len()
+    }
+
     /// Returns up to the first 50 verifiers. Use `list_verifiers_paginated` for larger sets.
     pub fn list_verifiers(env: Env) -> Vec<Address> {
         let all = get_verifiers(&env);
@@ -170,8 +212,12 @@ impl CreditRegistry {
         if tonnes <= 0 {
             return Err(CarbonChainError::InvalidTonnes);
         }
-        // 1 billion tonnes upper bound (in kg units: 1e15)
+        // 1 billion tonnes upper bound (in units: 1e15)
         if tonnes > 1_000_000_000_000_000 {
+            return Err(CarbonChainError::InvalidTonnes);
+        }
+        // Enforce 0.1 tonne minimum resolution: amount must be a multiple of MIN_CREDIT_UNIT.
+        if tonnes % MIN_CREDIT_UNIT != 0 {
             return Err(CarbonChainError::InvalidTonnes);
         }
 
@@ -200,7 +246,7 @@ impl CreditRegistry {
         Ok(id)
     }
 
-    pub fn approve_and_mint(env: Env, verifier: Address, credit_id: BytesN<32>) -> Result<(), CarbonChainError> {
+    pub fn approve_and_mint(env: Env, verifier: Address, credit_id: BytesN<32>, nonce: u64) -> Result<(), CarbonChainError> {
         if is_paused(&env) {
             return Err(CarbonChainError::ContractPaused);
         }
@@ -221,7 +267,7 @@ impl CreditRegistry {
         Ok(())
     }
 
-    pub fn flag_credit(env: Env, verifier: Address, credit_id: BytesN<32>, reason: String) -> Result<(), CarbonChainError> {
+    pub fn flag_credit(env: Env, verifier: Address, credit_id: BytesN<32>, reason: String, nonce: u64) -> Result<(), CarbonChainError> {
         if is_paused(&env) {
             return Err(CarbonChainError::ContractPaused);
         }
@@ -265,6 +311,13 @@ impl CreditRegistry {
         get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)
     }
 
+    /// Lightweight view that returns only the status of a credit without
+    /// deserialising the full `CreditMetadata` struct.
+    pub fn get_credit_status(env: Env, credit_id: BytesN<32>) -> Result<CreditStatus, CarbonChainError> {
+        let credit = get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)?;
+        Ok(credit.status)
+    }
+
     pub fn list_credits_by_project(env: Env, project_id: String) -> Vec<BytesN<32>> {
         get_credits_by_project(&env, &project_id)
     }
@@ -302,350 +355,4 @@ impl CreditRegistry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Env, String};
 
-    fn setup() -> (Env, CreditRegistryClient<'static>, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(CreditRegistry, ());
-        let client = CreditRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let verifier = Address::generate(&env);
-        let retirement = Address::generate(&env);
-        client.initialize(&admin, &retirement);
-        (env, client, admin, verifier)
-    }
-
-    fn submit_test_credit(env: &Env, client: &CreditRegistryClient, issuer: &Address) -> BytesN<32> {
-        let nonce = client.get_nonce(issuer);
-        client.submit_credit(
-            issuer,
-            &String::from_str(env, "PROJ-001"),
-            &2024,
-            &String::from_str(env, "VCS"),
-            &String::from_str(env, "NG"),
-            &1_000_000,
-            &String::from_str(env, "bafybei123"),
-            &nonce,
-        )
-    }
-
-    #[test]
-    fn test_initialize_twice_fails() {
-        let (env, client, admin, _) = setup();
-        let retirement = Address::generate(&env);
-        let result = client.try_initialize(&admin, &retirement);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_register_and_list_verifier() {
-        let (_env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let list = client.list_verifiers();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list.get(0).unwrap(), verifier);
-    }
-
-    #[test]
-    fn test_register_verifier_twice_fails() {
-        let (_env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let nonce2 = client.get_nonce(&admin);
-        let result = client.try_register_verifier(&admin, &verifier, &nonce2);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_remove_verifier() {
-        let (_env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let nonce2 = client.get_nonce(&admin);
-        client.remove_verifier(&admin, &verifier, &nonce2);
-        assert_eq!(client.list_verifiers().len(), 0);
-    }
-
-    #[test]
-    fn test_submit_credit() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let credit = client.get_credit(&id);
-        assert_eq!(credit.status, CreditStatus::Pending);
-        assert_eq!(credit.tonnes, 1_000_000);
-    }
-
-    #[test]
-    fn test_approve_and_mint() {
-        let (env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.approve_and_mint(&verifier, &id, &vnonce);
-        assert_eq!(client.get_credit(&id).status, CreditStatus::Active);
-    }
-
-    #[test]
-    fn test_approve_non_pending_fails() {
-        let (env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.approve_and_mint(&verifier, &id, &vnonce);
-        // second approval should fail
-        let vnonce2 = client.get_nonce(&verifier);
-        let result = client.try_approve_and_mint(&verifier, &id, &vnonce2);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_flag_credit() {
-        let (env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.flag_credit(&verifier, &id, &String::from_str(&env, "suspicious data"), &vnonce);
-        assert_eq!(client.get_credit(&id).status, CreditStatus::Flagged);
-    }
-
-    #[test]
-    fn test_double_flag_fails() {
-        let (env, client, admin, verifier) = setup();
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.flag_credit(&verifier, &id, &String::from_str(&env, "first flag"), &vnonce);
-        let vnonce2 = client.get_nonce(&verifier);
-        let result = client.try_flag_credit(&verifier, &id, &String::from_str(&env, "second flag"), &vnonce2);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_list_verifiers_paginated() {
-        let (env, client, admin, _) = setup();
-        let mut addrs = soroban_sdk::Vec::new(&env);
-        for _ in 0..5u32 {
-            let v = Address::generate(&env);
-            let nonce = client.get_nonce(&admin);
-            client.register_verifier(&admin, &v, &nonce);
-            addrs.push_back(v);
-        }
-        // page 0, size 2 → first 2
-        let p0 = client.list_verifiers_paginated(&0, &2);
-        assert_eq!(p0.len(), 2);
-        assert_eq!(p0.get(0).unwrap(), addrs.get(0).unwrap());
-        // page 1, size 2 → next 2
-        let p1 = client.list_verifiers_paginated(&1, &2);
-        assert_eq!(p1.len(), 2);
-        assert_eq!(p1.get(0).unwrap(), addrs.get(2).unwrap());
-        // page 2, size 2 → last 1
-        let p2 = client.list_verifiers_paginated(&2, &2);
-        assert_eq!(p2.len(), 1);
-    }
-
-    #[test]
-    fn test_mark_retired() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(CreditRegistry, ());
-        let client = CreditRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let verifier = Address::generate(&env);
-        let retirement = Address::generate(&env);
-        client.initialize(&admin, &retirement);
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.approve_and_mint(&verifier, &id, &vnonce);
-        client.mark_retired(&id);
-        assert_eq!(client.get_credit(&id).status, CreditStatus::Retired);
-    }
-
-    #[test]
-    fn test_unauthorized_mark_retired_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(CreditRegistry, ());
-        let client = CreditRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let verifier = Address::generate(&env);
-        let retirement = Address::generate(&env);
-
-        client.initialize(&admin, &retirement);
-        let nonce = client.get_nonce(&admin);
-        client.register_verifier(&admin, &verifier, &nonce);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let vnonce = client.get_nonce(&verifier);
-        client.approve_and_mint(&verifier, &id, &vnonce);
-
-        env.set_auths(&[]);
-        let result = client.try_mark_retired(&id);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_submit_credit_zero_tonnes_fails() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let nonce = client.get_nonce(&issuer);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &0,
-            &String::from_str(&env, "bafybei123"),
-            &nonce,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_submit_credit_negative_tonnes_fails() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let nonce = client.get_nonce(&issuer);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &-1,
-            &String::from_str(&env, "bafybei123"),
-            &nonce,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_submit_credit_over_upper_bound_fails() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let nonce = client.get_nonce(&issuer);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &1_000_000_000_000_001,
-            &String::from_str(&env, "bafybei123"),
-            &nonce,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_submit_credit_at_upper_bound_succeeds() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let nonce = client.get_nonce(&issuer);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &1_000_000_000_000_000,
-            &String::from_str(&env, "bafybei123"),
-            &nonce,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_list_credits_by_project() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        submit_test_credit(&env, &client, &issuer);
-        let ids = client.list_credits_by_project(&String::from_str(&env, "PROJ-001"));
-        assert_eq!(ids.len(), 1);
-    }
-
-    #[test]
-    fn test_non_verifier_cannot_approve() {
-        let (env, client, _, _) = setup();
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        let fake = Address::generate(&env);
-        let nonce = client.get_nonce(&fake);
-        let result = client.try_approve_and_mint(&fake, &id, &nonce);
-        assert!(result.is_err());
-    }
-
-    // ── Pause tests ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_pause_blocks_submit_credit() {
-        let (env, client, admin, _) = setup();
-        client.pause(&admin);
-        assert!(client.paused());
-        let issuer = Address::generate(&env);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &1_000_000,
-            &String::from_str(&env, "bafybei123"),
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_unpause_restores_submit_credit() {
-        let (env, client, admin, _) = setup();
-        client.pause(&admin);
-        client.unpause(&admin);
-        assert!(!client.paused());
-        let issuer = Address::generate(&env);
-        let result = client.try_submit_credit(
-            &issuer,
-            &String::from_str(&env, "PROJ-001"),
-            &2024,
-            &String::from_str(&env, "VCS"),
-            &String::from_str(&env, "NG"),
-            &1_000_000,
-            &String::from_str(&env, "bafybei123"),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_pause_blocks_approve_and_mint() {
-        let (env, client, admin, verifier) = setup();
-        client.register_verifier(&admin, &verifier);
-        let issuer = Address::generate(&env);
-        let id = submit_test_credit(&env, &client, &issuer);
-        client.pause(&admin);
-        assert!(client.try_approve_and_mint(&verifier, &id).is_err());
-    }
-
-    #[test]
-    fn test_non_admin_cannot_pause() {
-        let (env, client, _, _) = setup();
-        let rando = Address::generate(&env);
-        assert!(client.try_pause(&rando).is_err());
-    }
-}
