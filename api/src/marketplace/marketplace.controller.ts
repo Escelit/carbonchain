@@ -6,18 +6,21 @@ import {
   Param,
   Body,
   ParseIntPipe,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MarketplaceService } from './marketplace.service';
 import { CreateOfferDto } from './dto/create-offer.dto';
 import { Offer } from '../shared';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @ApiTags('marketplace')
 @Controller('marketplace')
 export class MarketplaceController {
   constructor(private readonly marketplaceService: MarketplaceService) {}
 
-  @ApiOperation({ summary: 'Create a sell offer' })
+  /** POST /marketplace/offer — protected: requires JWT */
+  @UseGuards(JwtAuthGuard)
   @Post('offer')
   createOffer(@Body() dto: CreateOfferDto): Promise<{ offerId: string }> {
     return this.marketplaceService.createOffer(dto);
@@ -42,5 +45,15 @@ export class MarketplaceController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<void> {
     return this.marketplaceService.cancelOffer(address, id);
+  }
+
+  /** POST /marketplace/offer/:id/buy — protected: requires JWT */
+  @UseGuards(JwtAuthGuard)
+  @Post('offer/:id/buy')
+  buyOffer(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('buyerPublicKey') buyerPublicKey: string,
+  ): Promise<void> {
+    return this.marketplaceService.buyOffer(buyerPublicKey, id);
   }
 }
