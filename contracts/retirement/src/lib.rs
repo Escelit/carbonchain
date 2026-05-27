@@ -522,4 +522,70 @@ mod tests {
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
     }
+
+    // ── Tests for Issue #86: Batch Retirement ───────────────────────────────
+
+    #[test]
+    fn test_batch_retire_multiple_credits() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, registry_id, credit_id, _) = setup(&env);
+        let registry_client =
+            carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let client = RetirementClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+
+        // Create 5 credits for batch retirement
+        let mut credit_ids: Vec<BytesN<32>> = Vec::new(&env);
+        let mut tonnes: Vec<i128> = Vec::new(&env);
+        
+        for _ in 0..5 {
+            credit_ids.push_back(credit_id.clone());
+            tonnes.push_back(1_000_000);
+        }
+
+        let nonce = client.get_nonce(&buyer);
+        let ret_ids = client.batch_retire(
+            &buyer,
+            &credit_ids,
+            &tonnes,
+            &String::from_str(&env, "batch offset"),
+            &registry_id,
+            &nonce,
+        );
+
+        assert_eq!(ret_ids.len(), 5);
+    }
+
+    #[test]
+    fn test_batch_retire_indexes_all_retirements() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, registry_id, credit_id, _) = setup(&env);
+        let client = RetirementClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+
+        let mut credit_ids: Vec<BytesN<32>> = Vec::new(&env);
+        let mut tonnes: Vec<i128> = Vec::new(&env);
+        
+        for _ in 0..3 {
+            credit_ids.push_back(credit_id.clone());
+            tonnes.push_back(1_000_000);
+        }
+
+        let nonce = client.get_nonce(&buyer);
+        client.batch_retire(
+            &buyer,
+            &credit_ids,
+            &tonnes,
+            &String::from_str(&env, "batch offset"),
+            &registry_id,
+            &nonce,
+        );
+
+        let ids = client.get_retirements_by_account(&buyer);
+        assert_eq!(ids.len(), 3);
+    }
 }

@@ -734,4 +734,100 @@ mod tests {
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
     }
+
+    // ── Tests for Issue #84: Verifier Reputation ─────────────────────────────
+
+    #[test]
+    fn test_verifier_reputation_increments_on_approval() {
+        let (env, client, admin, verifier) = setup();
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let vnonce = client.get_nonce(&verifier);
+        client.approve_and_mint(&verifier, &id, &vnonce);
+        let rep = client.get_verifier_reputation(&verifier);
+        assert_eq!(rep.approval_count, 1);
+        assert_eq!(rep.dispute_count, 0);
+    }
+
+    #[test]
+    fn test_verifier_reputation_increments_on_dispute() {
+        let (env, client, admin, verifier) = setup();
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let vnonce = client.get_nonce(&verifier);
+        client.flag_credit(&verifier, &id, &String::from_str(&env, "fraud"), &vnonce);
+        let rep = client.get_verifier_reputation(&verifier);
+        assert_eq!(rep.approval_count, 0);
+        assert_eq!(rep.dispute_count, 1);
+    }
+
+    // ── Tests for Issue #85: Credit Transfer ─────────────────────────────────
+
+    #[test]
+    fn test_transfer_credit_changes_owner() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let recipient = Address::generate(&env);
+        let nonce = client.get_nonce(&issuer);
+        client.transfer_credit(&issuer, &recipient, &id, &nonce);
+        let credit = client.get_credit(&id).unwrap();
+        assert_eq!(credit.owner, recipient);
+    }
+
+    #[test]
+    fn test_transfer_credit_requires_ownership() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let rando = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let nonce = client.get_nonce(&rando);
+        let result = client.try_transfer_credit(&rando, &recipient, &id, &nonce);
+        assert!(result.is_err());
+    }
+
+    // ── Tests for Issue #87: Credit Splitting ───────────────────────────────
+
+    #[test]
+    fn test_split_credit_creates_two_children() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let nonce = client.get_nonce(&issuer);
+        let (child1, child2) = client.split_credit(&issuer, &id, &500_000, &nonce).unwrap();
+        
+        let c1 = client.get_credit(&child1).unwrap();
+        let c2 = client.get_credit(&child2).unwrap();
+        assert_eq!(c1.tonnes, 500_000);
+        assert_eq!(c2.tonnes, 500_000);
+        assert_eq!(c1.owner, issuer);
+        assert_eq!(c2.owner, issuer);
+    }
+
+    #[test]
+    fn test_split_credit_retires_original() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let nonce = client.get_nonce(&issuer);
+        client.split_credit(&issuer, &id, &500_000, &nonce).unwrap();
+        
+        let original = client.get_credit(&id).unwrap();
+        assert_eq!(original.status, CreditStatus::Retired);
+    }
+
+    #[test]
+    fn test_split_credit_invalid_split_fails() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let id = submit_test_credit(&env, &client, &issuer);
+        let nonce = client.get_nonce(&issuer);
+        let result = client.try_split_credit(&issuer, &id, &1_000_000, &nonce);
+        assert!(result.is_err());
+    }
 }
