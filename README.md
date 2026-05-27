@@ -511,6 +511,7 @@ See [SECURITY.md](SECURITY.md) for the vulnerability reporting and responsible d
 - Immutable audit logs — no delete functions on retirement or session records
 - Authorization checks on all state-mutating operations
 - `.claudeignore` excludes `ADMIN_SECRET_KEY` and all secrets from Claude Code context
+- `cargo audit` runs in CI on every push/PR — high-severity CVEs in Rust dependencies fail the build
 
 ---
 

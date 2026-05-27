@@ -11,6 +11,8 @@ pub enum CreditStatus {
     Active = 1,
     Retired = 2,
     Flagged = 3,
+    Disputed = 4,
+    Expired = 5,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,6 +52,7 @@ pub enum DataKey {
     VerifierSet,
     Credit(BytesN<32>),
     ProjectCredits(String),
+    Project(String),
     RetirementContract,
     CreditNonce,
     Paused,

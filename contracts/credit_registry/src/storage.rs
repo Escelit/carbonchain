@@ -28,6 +28,16 @@ pub fn get_credit(env: &Env, id: &BytesN<32>) -> Option<CreditMetadata> {
     env.storage().persistent().get(&DataKey::Credit(id.clone()))
 }
 
+pub fn set_project(env: &Env, project_id: &String, metadata: &ProjectMetadata) {
+    let key = DataKey::Project(project_id.clone());
+    env.storage().persistent().set(&key, metadata);
+    env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+}
+
+pub fn get_project(env: &Env, project_id: &String) -> Option<ProjectMetadata> {
+    env.storage().persistent().get(&DataKey::Project(project_id.clone()))
+}
+
 pub fn get_verifiers(env: &Env) -> Vec<Address> {
     env.storage()
         .instance()
@@ -37,7 +47,7 @@ pub fn get_verifiers(env: &Env) -> Vec<Address> {
 
 pub fn set_verifiers(env: &Env, verifiers: &Vec<Address>) {
     env.storage().instance().set(&DataKey::VerifierSet, verifiers);
-    env.storage().instance().extend_ttl(TTL_THRESHOLD, MIN_TTL);
+    env.storage().instance().extend_ttl(&DataKey::VerifierSet, TTL_THRESHOLD, MIN_TTL);
 }
 
 pub fn is_verifier(env: &Env, verifier: &Address) -> bool {
