@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query, UseGuards, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CreditsService, IssueCreditDto } from './credits.service';
 import { CreditMetadata } from '../shared';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -55,9 +56,9 @@ export class CreditsController {
   @Get('project/:projectId')
   async listByProject(
     @Param('projectId') projectId: string,
-    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
-    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
-  ): Promise<PageResult<CreditMetadata>> {
-    return this.creditsService.listCreditsByProject(projectId, page, limit);
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) _page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) _limit: number,
+  ): Promise<string[]> {
+    return this.creditsService.listCreditsByProject(projectId);
   }
 }

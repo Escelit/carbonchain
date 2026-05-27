@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Logger, NotFoundException, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarService } from '../stellar/stellar.service';
@@ -6,8 +5,10 @@ import { StellarKeypairService } from '../stellar/stellar-keypair.service';
 import { nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
 import { RetirementRecord } from '../shared';
 import { RetirementEntity } from './retirement.entity';
-import {
+import type {
   IRetirementRepository,
+} from './retirement.repository';
+import {
   RETIREMENT_REPOSITORY,
 } from './retirement.repository';
 import { PageResult } from '../credits/credit.repository';
@@ -152,14 +153,6 @@ export class RetirementService {
       this.logger.log(`Verifying certificate: ${certificateId}`);
       const retirement = await this.getRetirement(certificateId);
 
-      // Fetch transaction details from Stellar to verify on-chain proof
-      const txHash = await this.stellarService.getTransactionHash(
-        certificateId,
-      );
-      const ledgerSequence = await this.stellarService.getLedgerSequence(
-        certificateId,
-      );
-
       return {
         id: retirement.id,
         credit_id: retirement.credit_id,
@@ -167,9 +160,8 @@ export class RetirementService {
         tonnes_retired: retirement.tonnes_retired,
         reason: retirement.reason,
         retired_at: retirement.retired_at,
-        tx_hash: txHash || '',
+        tx_hash: retirement.tx_hash || '',
         verified: true,
-        ledger_sequence: ledgerSequence,
       };
     } catch (error: unknown) {
       this.logger.error(
