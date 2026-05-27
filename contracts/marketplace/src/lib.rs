@@ -28,6 +28,8 @@ pub enum DataKey {
     SellerOffers(Address),
     Admin,
     Paused,
+    FeeBps,
+    FeeRecipient,
 }
 
 #[contracterror]
@@ -52,12 +54,14 @@ pub struct Marketplace;
 impl Marketplace {
     // ── Admin / Pause ────────────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address) -> Result<(), MarketplaceError> {
+    pub fn initialize(env: Env, admin: Address, fee_bps: u32, fee_recipient: Address) -> Result<(), MarketplaceError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(MarketplaceError::NotInitialized); // already initialised
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+        env.storage().instance().set(&DataKey::FeeRecipient, &fee_recipient);
         Ok(())
     }
 
@@ -73,6 +77,24 @@ impl Marketplace {
         env.storage().instance().set(&DataKey::Paused, &false);
         env.events().publish((symbol_short!("unpaused"),), admin);
         Ok(())
+    }
+
+    pub fn update_fee(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), MarketplaceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::FeeBps, &new_fee_bps);
+        env.events().publish((symbol_short!("fee_upd"),), new_fee_bps);
+        Ok(())
+    }
+
+    pub fn get_fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0u32)
+    }
+
+    pub fn get_fee_recipient(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeRecipient)
+            .unwrap_or_else(|| Address::from_contract_id(&env, &BytesN::from_array(&env, &[0u8; 32])))
     }
 
     pub fn paused(env: Env) -> bool {
@@ -202,6 +224,67 @@ impl Marketplace {
             }
         }
         active
+    }
+
+    /// Buy an offer. Deducts fee from buyer payment and sends to fee_recipient.
+    pub fn buy_offer(
+        env: Env,
+        buyer: Address,
+        offer_id: u64,
+        payment_xlm: i128,
+        credit_contract: Address,
+    ) -> Result<(), MarketplaceError> {
+        if Self::is_paused(&env) {
+            return Err(MarketplaceError::ContractPaused);
+        }
+        buyer.require_auth();
+
+        let mut offer: Offer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Offer(offer_id))
+            .ok_or(MarketplaceError::OfferNotFound)?;
+
+        if !offer.active {
+            return Err(MarketplaceError::AlreadyClosed);
+        }
+
+        if payment_xlm < offer.price_xlm {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+
+        let fee_bps = Self::get_fee_bps(&env);
+        let fee_amount = (offer.price_xlm * (fee_bps as i128)) / 10_000;
+        let seller_amount = offer.price_xlm - fee_amount;
+
+        // Transfer fee to fee_recipient
+        if fee_amount > 0 {
+            let fee_recipient = Self::get_fee_recipient(&env);
+            env.invoke_contract::<()>(
+                &credit_contract,
+                &Symbol::new(&env, "transfer"),
+                (&buyer, &fee_recipient, &fee_amount).into_val(&env),
+            );
+        }
+
+        // Transfer seller amount to seller
+        env.invoke_contract::<()>(
+            &credit_contract,
+            &Symbol::new(&env, "transfer"),
+            (&buyer, &offer.seller, &seller_amount).into_val(&env),
+        );
+
+        // Transfer credit to buyer
+        env.invoke_contract::<()>(
+            &credit_contract,
+            &Symbol::new(&env, "transfer_credit"),
+            (&offer.seller, &buyer, &offer.credit_id).into_val(&env),
+        );
+
+        offer.active = false;
+        env.storage().persistent().set(&DataKey::Offer(offer_id), &offer);
+        env.events().publish((symbol_short!("offer_buy"), buyer), offer_id);
+        Ok(())
     }
 
     pub fn offer_count(env: Env) -> u64 {
