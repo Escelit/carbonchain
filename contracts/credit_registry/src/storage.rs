@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Address, BytesN, Vec, String};
-use crate::types::{DataKey, CreditMetadata, VerifierReputation};
+use crate::types::{DataKey, CreditMetadata, VerifierReputation, Methodology};
 
 /// Minimum TTL in ledgers (~1 year at 5s/ledger).
 pub const MIN_TTL: u32 = 6_307_200;
@@ -125,4 +125,42 @@ pub fn increment_dispute_count(env: &Env, verifier: &Address) {
     let mut rep = get_verifier_reputation(env, verifier);
     rep.dispute_count += 1;
     set_verifier_reputation(env, verifier, &rep);
+}
+
+pub fn get_issuers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::IssuerSet)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_issuers(env: &Env, issuers: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::IssuerSet, issuers);
+    env.storage().instance().extend_ttl(&DataKey::IssuerSet, TTL_THRESHOLD, MIN_TTL);
+}
+
+pub fn is_issuer(env: &Env, issuer: &Address) -> bool {
+    get_issuers(env).contains(issuer)
+}
+
+pub fn get_methodologies(env: &Env) -> Vec<Methodology> {
+    env.storage()
+        .instance()
+        .get(&DataKey::MethodologySet)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_methodologies(env: &Env, methodologies: &Vec<Methodology>) {
+    env.storage().instance().set(&DataKey::MethodologySet, methodologies);
+    env.storage().instance().extend_ttl(&DataKey::MethodologySet, TTL_THRESHOLD, MIN_TTL);
+}
+
+pub fn is_methodology_valid(env: &Env, code: &String) -> bool {
+    let methodologies = get_methodologies(env);
+    for m in methodologies.iter() {
+        if m.code == *code {
+            return true;
+        }
+    }
+    false
 }

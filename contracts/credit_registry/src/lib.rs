@@ -18,12 +18,27 @@ use crate::storage::{
     get_nonce, consume_nonce,
     get_verifier_reputation, set_verifier_reputation,
     increment_approval_count, increment_dispute_count,
+    get_issuers, set_issuers, is_issuer as storage_is_issuer,
+    get_methodologies, set_methodologies, is_methodology_valid,
 };
-use crate::types::{CreditMetadata, CreditStatus, DataKey, ServiceType, VerifierReputation};
+use crate::types::{CreditMetadata, CreditStatus, DataKey, ServiceType, VerifierReputation, Methodology};
 use crate::events::{
     credit_submitted, credit_minted, verifier_added, verifier_removed,
     contract_paused, contract_unpaused, credit_transferred, credit_split, batch_retired,
 };
+
+fn get_nonce(env: &Env, addr: &Address) -> u64 {
+    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
+}
+
+fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+    let current = get_nonce(env, addr);
+    if current != expected { return false; }
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &(current + 1));
+    env.storage().persistent().extend_ttl(&key, storage::TTL_THRESHOLD, storage::MIN_TTL);
+    true
+}
 
 #[cfg(not(feature = "library"))]
 #[contract]
@@ -176,6 +191,76 @@ impl CreditRegistry {
         out
     }
 
+    // ── Issuer management ────────────────────────────────────────────────────
+
+    pub fn register_issuer(env: Env, admin: Address, issuer: Address, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        let mut issuers = get_issuers(&env);
+        if issuers.contains(&issuer) {
+            return Err(CarbonChainError::IssuerNotAllowed);
+        }
+        issuers.push_back(issuer);
+        set_issuers(&env, &issuers);
+        Ok(())
+    }
+
+    pub fn remove_issuer(env: Env, admin: Address, issuer: Address, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        let old = get_issuers(&env);
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for i in old.iter() {
+            if i != issuer {
+                new_list.push_back(i);
+            }
+        }
+        set_issuers(&env, &new_list);
+        Ok(())
+    }
+
+    pub fn list_issuers(env: Env) -> Vec<Address> {
+        get_issuers(&env)
+    }
+
+    // ── Methodology management ───────────────────────────────────────────────
+
+    pub fn register_methodology(env: Env, admin: Address, code: String, name: String, nonce: u64) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(CarbonChainError::InvalidNonce);
+        }
+        let mut methodologies = get_methodologies(&env);
+        for m in methodologies.iter() {
+            if m.code == code {
+                return Err(CarbonChainError::InvalidMetadata);
+            }
+        }
+        methodologies.push_back(Methodology { code, name });
+        set_methodologies(&env, &methodologies);
+        Ok(())
+    }
+
+    pub fn list_methodologies(env: Env) -> Vec<Methodology> {
+        get_methodologies(&env)
+    }
+
     // ── Credit lifecycle ─────────────────────────────────────────────────────
 
     /// Submit a new carbon credit for verifier approval.
@@ -215,6 +300,12 @@ impl CreditRegistry {
         // Validate project exists
         if env.storage().persistent().get::<_, ProjectMetadata>(&DataKey::Project(project_id.clone())).is_none() {
             return Err(CarbonChainError::ProjectNotFound);
+        }
+        if !storage_is_issuer(&env, &issuer) {
+            return Err(CarbonChainError::IssuerNotAllowed);
+        }
+        if !is_methodology_valid(&env, &methodology) {
+            return Err(CarbonChainError::InvalidMethodology);
         }
         if tonnes <= 0 {
             return Err(CarbonChainError::InvalidTonnes);
