@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN, Vec};
+use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN, Vec, symbol_short};
 use soroban_sdk::xdr::ToXdr;
 
 pub mod types;
@@ -211,6 +211,10 @@ impl CreditRegistry {
         issuer.require_auth();
         if !consume_nonce(&env, &issuer, nonce) {
             return Err(CarbonChainError::InvalidNonce);
+        }
+        // Validate project exists
+        if env.storage().persistent().get::<_, ProjectMetadata>(&DataKey::Project(project_id.clone())).is_none() {
+            return Err(CarbonChainError::ProjectNotFound);
         }
         if tonnes <= 0 {
             return Err(CarbonChainError::InvalidTonnes);
@@ -538,6 +542,224 @@ impl CreditRegistry {
         env.storage().persistent()
             .get(&DataKey::VerifierServices(verifier))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // ── Issue #91: Project Registry ──────────────────────────────────────────
+
+    pub fn register_project(
+        env: Env,
+        owner: Address,
+        project_id: String,
+        name: String,
+        description: String,
+        location: String,
+    ) -> Result<(), CarbonChainError> {
+        owner.require_auth();
+        if env.storage().persistent().get::<_, ProjectMetadata>(&DataKey::Project(project_id.clone())).is_some() {
+            return Err(CarbonChainError::ProjectAlreadyExists);
+        }
+        let metadata = ProjectMetadata {
+            owner: owner.clone(),
+            name,
+            description,
+            location,
+            created_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&DataKey::Project(project_id.clone()), &metadata);
+        env.events().publish((symbol_short!("proj_reg"), owner), project_id);
+        Ok(())
+    }
+
+    pub fn get_project(env: Env, project_id: String) -> Result<ProjectMetadata, CarbonChainError> {
+        env.storage().persistent()
+            .get(&DataKey::Project(project_id))
+            .ok_or(CarbonChainError::ProjectNotFound)
+    }
+
+    // ── Issue #90: Vintage Year Expiry ───────────────────────────────────────
+
+    pub fn expire_credit(env: Env, admin: Address, credit_id: BytesN<32>) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        let mut credit = get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)?;
+        if credit.status == CreditStatus::Retired || credit.status == CreditStatus::Expired {
+            return Err(CarbonChainError::InvalidStatusTransition);
+        }
+        credit.status = CreditStatus::Expired;
+        set_credit(&env, &credit_id, &credit);
+        env.events().publish((symbol_short!("expired"),), credit_id);
+        Ok(())
+    }
+
+    pub fn get_expired_credits(env: Env, project_id: String) -> Vec<BytesN<32>> {
+        let credit_ids = get_credits_by_project(&env, &project_id);
+        let mut expired: Vec<BytesN<32>> = Vec::new(&env);
+        for id in credit_ids.iter() {
+            if let Some(credit) = get_credit(&env, &id) {
+                if credit.status == CreditStatus::Expired {
+                    expired.push_back(id);
+                }
+            }
+        }
+        expired
+    }
+
+    // ── Issue #89: Verifier Dispute Resolution ───────────────────────────────
+
+    pub fn dispute_credit(
+        env: Env,
+        disputer: Address,
+        credit_id: BytesN<32>,
+        evidence_ipfs_hash: String,
+    ) -> Result<(), CarbonChainError> {
+        disputer.require_auth();
+        let mut credit = get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)?;
+        if credit.status == CreditStatus::Retired || credit.status == CreditStatus::Disputed {
+            return Err(CarbonChainError::InvalidStatusTransition);
+        }
+        credit.status = CreditStatus::Disputed;
+        set_credit(&env, &credit_id, &credit);
+        env.storage().persistent().set(&DataKey::Dispute(credit_id.clone()), &evidence_ipfs_hash);
+        env.events().publish((symbol_short!("dispute"), disputer), (credit_id, evidence_ipfs_hash));
+        Ok(())
+    }
+
+    pub fn resolve_dispute(
+        env: Env,
+        admin: Address,
+        credit_id: BytesN<32>,
+        outcome: u32,
+    ) -> Result<(), CarbonChainError> {
+        let stored_admin = get_admin(&env).ok_or(CarbonChainError::NotInitialized)?;
+        admin.require_auth();
+        if admin != stored_admin {
+            return Err(CarbonChainError::Unauthorized);
+        }
+        let mut credit = get_credit(&env, &credit_id).ok_or(CarbonChainError::CreditNotFound)?;
+        if credit.status != CreditStatus::Disputed {
+            return Err(CarbonChainError::InvalidDisputeStatus);
+        }
+        if outcome == 0 {
+            credit.status = CreditStatus::Active;
+        } else if outcome == 1 {
+            credit.status = CreditStatus::Flagged;
+        } else {
+            return Err(CarbonChainError::InvalidMetadata);
+        }
+        set_credit(&env, &credit_id, &credit);
+        env.storage().persistent().remove(&DataKey::Dispute(credit_id.clone()));
+        env.events().publish((symbol_short!("resolved"),), (credit_id, outcome));
+        Ok(())
+    }
+
+    // ── Issue #88: Credit Merging ────────────────────────────────────────────
+
+    pub fn merge_credits(
+        env: Env,
+        caller: Address,
+        credit_ids: Vec<BytesN<32>>,
+    ) -> Result<BytesN<32>, CarbonChainError> {
+        caller.require_auth();
+        if credit_ids.len() < 2 {
+            return Err(CarbonChainError::InvalidMetadata);
+        }
+
+        let mut total_tonnes: i128 = 0;
+        let mut project_id: Option<String> = None;
+        let mut vintage_year: Option<u32> = None;
+        let mut issuer: Option<Address> = None;
+        let mut methodology: Option<String> = None;
+        let mut geography: Option<String> = None;
+        let mut ipfs_hash: Option<String> = None;
+
+        for id in credit_ids.iter() {
+            let credit = get_credit(&env, &id).ok_or(CarbonChainError::CreditNotFound)?;
+            
+            if credit.owner != caller {
+                return Err(CarbonChainError::Unauthorized);
+            }
+
+            if credit.status != CreditStatus::Active {
+                return Err(CarbonChainError::InvalidStatusTransition);
+            }
+
+            if let Some(ref pid) = project_id {
+                if credit.project_id != *pid {
+                    return Err(CarbonChainError::InvalidMetadata);
+                }
+            } else {
+                project_id = Some(credit.project_id.clone());
+            }
+
+            if let Some(vy) = vintage_year {
+                if credit.vintage_year != vy {
+                    return Err(CarbonChainError::InvalidMetadata);
+                }
+            } else {
+                vintage_year = Some(credit.vintage_year);
+            }
+
+            if let Some(ref iss) = issuer {
+                if credit.issuer != *iss {
+                    return Err(CarbonChainError::InvalidMetadata);
+                }
+            } else {
+                issuer = Some(credit.issuer.clone());
+            }
+
+            if let Some(ref meth) = methodology {
+                if credit.methodology != *meth {
+                    return Err(CarbonChainError::InvalidMetadata);
+                }
+            } else {
+                methodology = Some(credit.methodology.clone());
+            }
+
+            if let Some(ref geo) = geography {
+                if credit.geography != *geo {
+                    return Err(CarbonChainError::InvalidMetadata);
+                }
+            } else {
+                geography = Some(credit.geography.clone());
+            }
+
+            ipfs_hash = Some(credit.ipfs_hash.clone());
+            total_tonnes = total_tonnes.checked_add(credit.tonnes).ok_or(CarbonChainError::Overflow)?;
+        }
+
+        let nonce: u64 = env.storage().instance().get(&DataKey::CreditNonce).unwrap_or(0u64);
+        env.storage().instance().set(&DataKey::CreditNonce, &(nonce + 1));
+        let mut preimage = project_id.clone().unwrap().to_xdr(&env);
+        preimage.append(&nonce.to_xdr(&env));
+        let merged_id: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+        let merged_credit = CreditMetadata {
+            project_id: project_id.unwrap(),
+            issuer: issuer.unwrap(),
+            owner: caller.clone(),
+            vintage_year: vintage_year.unwrap(),
+            methodology: methodology.unwrap(),
+            geography: geography.unwrap(),
+            tonnes: total_tonnes,
+            ipfs_hash: ipfs_hash.unwrap(),
+            status: CreditStatus::Active,
+            issued_at: env.ledger().timestamp(),
+        };
+
+        set_credit(&env, &merged_id, &merged_credit);
+        add_credit_to_project(&env, &merged_credit.project_id, &merged_id);
+
+        for id in credit_ids.iter() {
+            let mut credit = get_credit(&env, &id).ok_or(CarbonChainError::CreditNotFound)?;
+            credit.status = CreditStatus::Retired;
+            set_credit(&env, &id, &credit);
+        }
+
+        env.events().publish((symbol_short!("merged"),), (merged_id.clone(), credit_ids.len() as u32));
+        Ok(merged_id)
     }
 }
 
