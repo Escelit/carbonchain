@@ -254,7 +254,7 @@ impl CreditRegistry {
 
         set_credit(&env, &id, &metadata);
         add_credit_to_project(&env, &project_id, &id);
-        credit_submitted(&env, issuer, project_id, tonnes);
+        credit_submitted(&env, issuer, project_id, id.clone(), tonnes);
 
         Ok(id)
     }
