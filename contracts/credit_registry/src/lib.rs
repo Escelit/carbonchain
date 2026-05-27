@@ -174,6 +174,10 @@ impl CreditRegistry {
         if tonnes > 1_000_000_000_000_000 {
             return Err(CarbonChainError::InvalidTonnes);
         }
+        // Validate IPFS hash (CIDv1 minimum 59 chars)
+        if ipfs_hash.len() < 59 {
+            return Err(CarbonChainError::InvalidMetadata);
+        }
 
         // Include a per-contract nonce so two credits for the same project get distinct IDs.
         let nonce: u64 = env.storage().instance().get(&DataKey::CreditNonce).unwrap_or(0u64);
@@ -195,7 +199,7 @@ impl CreditRegistry {
 
         set_credit(&env, &id, &metadata);
         add_credit_to_project(&env, &project_id, &id);
-        credit_submitted(&env, issuer, project_id, tonnes);
+        credit_submitted(&env, issuer, project_id, id.clone(), tonnes);
 
         Ok(id)
     }
@@ -647,5 +651,44 @@ mod tests {
         let (env, client, _, _) = setup();
         let rando = Address::generate(&env);
         assert!(client.try_pause(&rando).is_err());
+    }
+
+    // ── IPFS hash validation tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_submit_credit_invalid_ipfs_hash_too_short() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let nonce = client.get_nonce(&issuer);
+        let result = client.try_submit_credit(
+            &issuer,
+            &String::from_str(&env, "PROJ-001"),
+            &2024,
+            &String::from_str(&env, "VCS"),
+            &String::from_str(&env, "NG"),
+            &1_000_000,
+            &String::from_str(&env, "bafybei123"),
+            &nonce,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_submit_credit_valid_ipfs_hash() {
+        let (env, client, _, _) = setup();
+        let issuer = Address::generate(&env);
+        let nonce = client.get_nonce(&issuer);
+        let valid_hash = String::from_str(&env, "bafybeiaysu4bvzqyztbisqysa3fd3f6pasqfvbt2icqidi6ayob5hzgq");
+        let result = client.try_submit_credit(
+            &issuer,
+            &String::from_str(&env, "PROJ-001"),
+            &2024,
+            &String::from_str(&env, "VCS"),
+            &String::from_str(&env, "NG"),
+            &1_000_000,
+            &valid_hash,
+            &nonce,
+        );
+        assert!(result.is_ok());
     }
 }
