@@ -200,7 +200,7 @@ impl Marketplace {
     /// - [`MarketplaceError::OfferNotFound`] — no offer exists for `offer_id`.
     /// - [`MarketplaceError::Unauthorized`] — `seller` is not the offer creator.
     /// - [`MarketplaceError::AlreadyClosed`] — offer has already been cancelled.
-    pub fn cancel_offer(env: Env, seller: Address, offer_id: u64) -> Result<(), MarketplaceError> {
+    pub fn cancel_offer(env: Env, seller: Address, offer_id: u64, nonce: u64) -> Result<(), MarketplaceError> {
         if Self::is_paused(&env) {
             return Err(MarketplaceError::ContractPaused);
         }
@@ -294,7 +294,7 @@ impl Marketplace {
 
     pub fn cleanup_expired_offers(env: Env, admin: Address) -> Result<(), MarketplaceError> {
         Self::require_admin(&env, &admin)?;
-        let count = Self::offer_count(&env);
+        let count = Self::offer_count(env.clone());
         let now = env.ledger().timestamp();
         
         for i in 0..count {
@@ -358,6 +358,23 @@ impl Marketplace {
 
     pub fn get_nonce(env: Env, address: Address) -> u64 {
         get_nonce(&env, &address)
+    }
+
+    // ── Issue 3: Contract Upgrade Mechanism ──────────────────────────────────
+
+    /// Upgrade the contract WASM to a new hash. Only the admin may call this.
+    ///
+    /// # Errors
+    /// - [`MarketplaceError::NotInitialized`] — contract has not been initialised.
+    /// - [`MarketplaceError::Unauthorized`] — caller is not the admin.
+    /// - [`MarketplaceError::InvalidNonce`] — `nonce` does not match the current admin nonce.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>, nonce: u64) -> Result<(), MarketplaceError> {
+        Self::require_admin(&env, &admin)?;
+        if !Self::consume_nonce(&env, &admin, nonce) {
+            return Err(MarketplaceError::InvalidNonce);
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 }
 

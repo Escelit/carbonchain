@@ -31,6 +31,10 @@ pub enum DataKey {
     History(String),
     /// Pause flag.
     Paused,
+    /// Replay-protection nonce per address.
+    Nonce(Address),
+    /// Pending admin for two-step transfer.
+    PendingAdmin,
 }
 
 #[contracterror]
@@ -43,6 +47,9 @@ pub enum OracleError {
     Overflow           = 122,
     ContractPaused     = 123,
     ProjectNotFound    = 124,
+    InvalidNonce       = 125,
+    InvalidProject     = 126,
+    NoPendingAdmin     = 127,
 }
 
 // Maximum MRV history entries retained per project (ring-buffer eviction).
@@ -110,9 +117,6 @@ impl MrvOracle {
     /// - [`OracleError::InvalidNonce`] — `nonce` does not match the current admin nonce.
     pub fn register_oracle(env: Env, admin: Address, oracle: Address) -> Result<bool, OracleError> {
         Self::require_admin(&env, &admin)?;
-        if !Self::consume_nonce(&env, &admin, nonce) {
-            return Err(OracleError::InvalidNonce);
-        }
         let mut set: Vec<Address> = env
             .storage().instance()
             .get(&DataKey::OracleSet)
@@ -219,6 +223,19 @@ impl MrvOracle {
         env.storage().persistent().get(&DataKey::Nonce(address)).unwrap_or(0u64)
     }
 
+    // ── Issue 3: Contract Upgrade Mechanism ──────────────────────────────────
+
+    /// Upgrade the contract WASM to a new hash. Only the admin may call this.
+    ///
+    /// # Errors
+    /// - [`OracleError::NotInitialized`] — contract has not been initialised.
+    /// - [`OracleError::Unauthorized`] — caller is not the admin.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), OracleError> {
+        Self::require_admin(&env, &admin)?;
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
     /// Propose a new admin. The candidate must call [`accept_admin`] to complete the transfer.
     ///
     /// # Errors
@@ -236,6 +253,10 @@ impl MrvOracle {
     /// - [`OracleError::NoPendingAdmin`] — no transfer has been proposed.
     /// - [`OracleError::Unauthorized`] — `new_admin` does not match the pending candidate.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), OracleError> {
+        let pending: Address = env
+            .storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(OracleError::NoPendingAdmin)?;
         if new_admin != pending {
             return Err(OracleError::Unauthorized);
         }

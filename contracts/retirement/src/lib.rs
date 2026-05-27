@@ -24,19 +24,6 @@ fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
     true
 }
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum RetirementError {
-    CreditNotActive    = 110,
-    AlreadyInitialized = 111,
-    NotInitialized     = 112,
-    Unauthorized       = 113,
-    ContractPaused     = 114,
-    InvalidNonce       = 115,
-    NoPendingAdmin     = 116,
-}
-
 #[contract]
 pub struct Retirement;
 
@@ -273,6 +260,23 @@ impl Retirement {
         get_nonce(&env, &address)
     }
 
+    // ── Issue 3: Contract Upgrade Mechanism ──────────────────────────────────
+
+    /// Upgrade the contract WASM to a new hash. Only the admin may call this.
+    ///
+    /// # Errors
+    /// - [`RetirementError::NotInitialized`] — contract has not been initialised.
+    /// - [`RetirementError::Unauthorized`] — caller is not the admin.
+    /// - [`RetirementError::InvalidNonce`] — `nonce` does not match the current admin nonce.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>, nonce: u64) -> Result<(), RetirementError> {
+        Self::require_admin(&env, &admin)?;
+        if !consume_nonce(&env, &admin, nonce) {
+            return Err(RetirementError::InvalidNonce);
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
     /// Propose a new admin. The candidate must call [`accept_admin`] to complete the transfer.
     ///
     /// # Errors
@@ -296,6 +300,9 @@ impl Retirement {
     /// - [`RetirementError::NoPendingAdmin`] — no transfer has been proposed.
     /// - [`RetirementError::Unauthorized`] — `new_admin` does not match the pending candidate.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), RetirementError> {
+        let pending: Address = env.storage().instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(RetirementError::NoPendingAdmin)?;
         if new_admin != pending {
             return Err(RetirementError::Unauthorized);
         }
