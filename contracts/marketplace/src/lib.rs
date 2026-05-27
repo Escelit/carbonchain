@@ -19,6 +19,7 @@ pub struct Offer {
     pub tonnes: i128,
     pub active: bool,
     pub created_at: u64,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -30,6 +31,8 @@ pub enum DataKey {
     Admin,
     Paused,
     EscrowedAmount(u64),  // Track escrowed tokens per offer
+    Nonce(Address),
+    MinPrice,
 }
 
 #[contracterror]
@@ -43,13 +46,28 @@ pub enum MarketplaceError {
     CreditNotActive = 119,
     NotInitialized  = 120,
     ContractPaused  = 121,
-    Overflow        = 122,
+    InvalidNonce    = 122,
+    OfferExpired    = 123,
+    Overflow        = 124,
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct Marketplace;
+
+fn get_nonce(env: &Env, addr: &Address) -> u64 {
+    env.storage().persistent().get(&DataKey::Nonce(addr.clone())).unwrap_or(0u64)
+}
+
+fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+    let current = get_nonce(env, addr);
+    if current != expected { return false; }
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &(current + 1));
+    env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+    true
+}
 
 #[contractimpl]
 impl Marketplace {
@@ -59,9 +77,13 @@ impl Marketplace {
     ///
     /// # Errors
     /// - [`MarketplaceError::NotInitialized`] — contract has already been initialised.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), MarketplaceError> {
+    pub fn initialize(env: Env, admin: Address, min_price_per_tonne: i128) -> Result<(), MarketplaceError> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(MarketplaceError::NotInitialized); // already initialised
+        }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::MinPrice, &min_price_per_tonne);
         Ok(())
     }
 
@@ -109,6 +131,7 @@ impl Marketplace {
         price_xlm: i128,
         tonnes: i128,
         registry_id: Address,
+        expires_at: Option<u64>,
         nonce: u64,
     ) -> Result<u64, MarketplaceError> {
         if Self::is_paused(&env) {
@@ -119,6 +142,11 @@ impl Marketplace {
             return Err(MarketplaceError::InvalidNonce);
         }
         if price_xlm <= 0 || tonnes <= 0 {
+            return Err(MarketplaceError::InvalidPrice);
+        }
+        
+        let min_price: i128 = env.storage().instance().get(&DataKey::MinPrice).unwrap_or(0);
+        if price_xlm < min_price {
             return Err(MarketplaceError::InvalidPrice);
         }
 
@@ -140,6 +168,7 @@ impl Marketplace {
             tonnes,
             active: true,
             created_at: env.ledger().timestamp(),
+            expires_at,
         };
 
         env.storage().persistent().set(&DataKey::Offer(offer_id), &offer);
@@ -213,10 +242,18 @@ impl Marketplace {
     /// # Errors
     /// - [`MarketplaceError::OfferNotFound`] — no offer exists for `offer_id`.
     pub fn get_offer(env: Env, offer_id: u64) -> Result<Offer, MarketplaceError> {
-        env.storage()
+        let offer: Offer = env.storage()
             .persistent()
             .get(&DataKey::Offer(offer_id))
-            .ok_or(MarketplaceError::OfferNotFound)
+            .ok_or(MarketplaceError::OfferNotFound)?;
+        
+        if let Some(expires_at) = offer.expires_at {
+            if env.ledger().timestamp() > expires_at {
+                return Err(MarketplaceError::OfferExpired);
+            }
+        }
+        
+        Ok(offer)
     }
 
     /// Returns all offer IDs for a seller (including cancelled ones).
@@ -253,6 +290,34 @@ impl Marketplace {
         env.storage().persistent().get(&DataKey::OfferCount).unwrap_or(0u64)
     }
 
+    pub fn cleanup_expired_offers(env: Env, admin: Address) -> Result<(), MarketplaceError> {
+        Self::require_admin(&env, &admin)?;
+        let count = Self::offer_count(&env);
+        let now = env.ledger().timestamp();
+        
+        for i in 0..count {
+            if let Some(mut offer) = env.storage().persistent().get::<_, Offer>(&DataKey::Offer(i)) {
+                if let Some(expires_at) = offer.expires_at {
+                    if now > expires_at && offer.active {
+                        offer.active = false;
+                        env.storage().persistent().set(&DataKey::Offer(i), &offer);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_min_price(env: Env, admin: Address, new_min: i128) -> Result<(), MarketplaceError> {
+        Self::require_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::MinPrice, &new_min);
+        Ok(())
+    }
+
+    pub fn get_min_price(env: Env) -> i128 {
+        env.storage().instance().get(&DataKey::MinPrice).unwrap_or(0)
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     fn next_id(env: &Env) -> Result<u64, MarketplaceError> {
@@ -278,6 +343,19 @@ impl Marketplace {
 
     fn is_paused(env: &Env) -> bool {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    fn consume_nonce(env: &Env, addr: &Address, expected: u64) -> bool {
+        let current = get_nonce(env, addr);
+        if current != expected { return false; }
+        let key = DataKey::Nonce(addr.clone());
+        env.storage().persistent().set(&key, &(current + 1));
+        env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+        true
+    }
+
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        get_nonce(&env, &address)
     }
 }
 

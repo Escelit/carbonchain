@@ -45,6 +45,13 @@ pub struct VerifierReputation {
     pub dispute_count: u64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct Methodology {
+    pub code: String,
+    pub name: String,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -56,6 +63,8 @@ pub enum DataKey {
     RetirementContract,
     CreditNonce,
     Paused,
+    IssuerSet,
+    MethodologySet,
     Nonce(Address),
     PendingAdmin,
     VerifierReputation(Address),
