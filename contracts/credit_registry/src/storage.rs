@@ -70,6 +70,18 @@ pub fn get_credits_by_project(env: &Env, project_id: &String) -> Vec<BytesN<32>>
         .unwrap_or_else(|| Vec::new(env))
 }
 
+pub fn get_credit_by_project_vintage(env: &Env, project_id: &String, vintage_year: u32) -> Option<BytesN<32>> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CreditByProjectVintage(project_id.clone(), vintage_year))
+}
+
+pub fn set_credit_by_project_vintage(env: &Env, project_id: &String, vintage_year: u32, credit_id: &BytesN<32>) {
+    let key = DataKey::CreditByProjectVintage(project_id.clone(), vintage_year);
+    env.storage().persistent().set(&key, credit_id);
+    env.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, MIN_TTL);
+}
+
 pub fn set_retirement_contract(env: &Env, addr: &Address) {
     env.storage().instance().set(&DataKey::RetirementContract, addr);
 }

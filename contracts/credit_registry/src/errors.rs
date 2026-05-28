@@ -26,10 +26,11 @@ pub enum CarbonChainError {
     /// Returned when trying to remove a verifier who still has Pending credits.
     VerifierHasPendingCredits = 119,
     ProjectNotFound = 120,
-    ProjectAlreadyExists = 121,
-    SessionNotFound = 122,
+    DuplicateCredit = 121,
+    ProjectAlreadyExists = 122,
+    SessionNotFound = 123,
     /// Returned when `required_approvals` is set to zero or exceeds the verifier count.
-    InvalidApprovalThreshold = 123,
+    InvalidApprovalThreshold = 124,
     /// Returned when a verifier tries to approve a credit they already approved.
-    AlreadyApproved = 124,
+    AlreadyApproved = 125,
 }

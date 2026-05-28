@@ -89,6 +89,7 @@ pub enum DataKey {
     VerifierSet,
     Credit(BytesN<32>),
     ProjectCredits(String),
+    CreditByProjectVintage(String, u32),
     Project(String),
     RetirementContract,
     CreditNonce,
