@@ -4,6 +4,7 @@
     <a routerLink="/dashboard">{{ 'nav.dashboard' | translate }}</a>
     <a routerLink="/marketplace">{{ 'nav.marketplace' | translate }}</a>
     <a routerLink="/retire">{{ 'nav.retire' | translate }}</a>
+    <a routerLink="/admin">Admin</a>
   </nav>
   <app-locale-switcher />
   <button class="theme-toggle" (click)="theme.toggle()" [attr.aria-label]="theme.isDark() ? 'Switch to light mode' : 'Switch to dark mode'">

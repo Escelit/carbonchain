@@ -9,6 +9,11 @@ export interface AdminStats {
   activeVerifiers: number;
 }
 
+export interface VerifierCapabilities {
+  methodologies?: string[];
+  geographies?: string[];
+}
+
 @Injectable()
 export class AdminService {
   constructor(
@@ -25,9 +30,18 @@ export class AdminService {
     };
   }
 
+  async registerVerifier(address: string): Promise<{ registered: boolean; address: string }> {
+    return { registered: true, address };
+  }
+
   async suspendVerifier(id: string): Promise<{ suspended: boolean }> {
     await this.verifiersService.getVerifier(id);
     return { suspended: true };
+  }
+
+  async configureVerifier(id: string, _capabilities: VerifierCapabilities): Promise<{ configured: boolean; verifierId: string }> {
+    await this.verifiersService.getVerifier(id);
+    return { configured: true, verifierId: id };
   }
 
   async flagCredit(id: string): Promise<{ flagged: boolean; creditId: string; status: CreditStatus }> {
