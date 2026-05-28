@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { CacheModule } from './common/cache.module';
 import { StellarModule } from './stellar/stellar.module';
 import { CreditsModule } from './credits/credits.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -19,6 +20,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
       isGlobal: true,
     }),
     ScheduleModule.forRoot(),
+    CacheModule,
     StellarModule,
     CreditsModule,
     ProjectsModule,
