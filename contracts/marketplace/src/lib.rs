@@ -44,6 +44,7 @@ pub enum MarketplaceError {
     OfferNotFound   = 115,
     Unauthorized    = 116,
     InvalidPrice    = 117,
+    InvalidTonnes   = 125,
     AlreadyClosed   = 118,
     CreditNotActive = 119,
     NotInitialized  = 120,
@@ -124,7 +125,8 @@ impl Marketplace {
     /// # Errors
     /// - [`MarketplaceError::ContractPaused`] — contract is paused.
     /// - [`MarketplaceError::InvalidNonce`] — `nonce` does not match the current seller nonce.
-    /// - [`MarketplaceError::InvalidPrice`] — `price_xlm` or `tonnes` is zero or negative.
+    /// - [`MarketplaceError::InvalidPrice`] — `price_xlm` is zero or negative.
+    /// - [`MarketplaceError::InvalidTonnes`] — `tonnes` is zero, negative, or not a multiple of 100_000.
     /// - [`MarketplaceError::CreditNotActive`] — credit is not in `Active` status.
     pub fn create_offer(
         env: Env,
@@ -143,8 +145,11 @@ impl Marketplace {
         if !Self::consume_nonce(&env, &seller, nonce) {
             return Err(MarketplaceError::InvalidNonce);
         }
-        if price_xlm <= 0 || tonnes <= 0 {
+        if price_xlm <= 0 {
             return Err(MarketplaceError::InvalidPrice);
+        }
+        if tonnes <= 0 || tonnes % 100_000 != 0 {
+            return Err(MarketplaceError::InvalidTonnes);
         }
         
         let min_price: i128 = env.storage().instance().get(&DataKey::MinPrice).unwrap_or(0);
@@ -527,7 +532,35 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
         let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
-        assert!(client.try_create_offer(&seller, &credit_id, &10_000_000, &0, &registry_id).is_err());
+        let result = client.try_create_offer(&seller, &credit_id, &10_000_000, &0, &registry_id);
+        assert_eq!(result, Err(MarketplaceError::InvalidTonnes));
+    }
+
+    #[test]
+    fn test_negative_tonnes_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        let result = client.try_create_offer(&seller, &credit_id, &10_000_000, &-100_000, &registry_id);
+        assert_eq!(result, Err(MarketplaceError::InvalidTonnes));
+    }
+
+    #[test]
+    fn test_tonnes_multiple_of_100000_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &100_000, &registry_id, &None);
+        assert_eq!(offer_id, 0);
+    }
+
+    #[test]
+    fn test_tonnes_not_multiple_of_100000_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        let result = client.try_create_offer(&seller, &credit_id, &10_000_000, &99_999, &registry_id, &None);
+        assert_eq!(result, Err(MarketplaceError::InvalidTonnes));
     }
 
     #[test]
