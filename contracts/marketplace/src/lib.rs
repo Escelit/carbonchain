@@ -161,6 +161,21 @@ impl Marketplace {
         if credit.status != carbonchain_credit_registry::types::CreditStatus::Active {
             return Err(MarketplaceError::CreditNotActive);
         }
+        if credit.owner != seller {
+            return Err(MarketplaceError::Unauthorized);
+        }
+
+        let registry_nonce: u64 = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "get_nonce"),
+            (seller.clone(),).into_val(&env),
+        );
+        let escrow_account: Address = env.current_contract_address();
+        let _: () = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "transfer_credit"),
+            (seller.clone(), escrow_account.clone(), credit_id.clone(), registry_nonce).into_val(&env),
+        );
 
         let offer_id = Self::next_id(&env)?;
         let offer = Offer {
@@ -200,7 +215,7 @@ impl Marketplace {
     /// - [`MarketplaceError::OfferNotFound`] — no offer exists for `offer_id`.
     /// - [`MarketplaceError::Unauthorized`] — `seller` is not the offer creator.
     /// - [`MarketplaceError::AlreadyClosed`] — offer has already been cancelled.
-    pub fn cancel_offer(env: Env, seller: Address, offer_id: u64, nonce: u64) -> Result<(), MarketplaceError> {
+    pub fn cancel_offer(env: Env, seller: Address, offer_id: u64, registry_id: Address, nonce: u64) -> Result<(), MarketplaceError> {
         if Self::is_paused(&env) {
             return Err(MarketplaceError::ContractPaused);
         }
@@ -220,6 +235,24 @@ impl Marketplace {
         if !offer.active {
             return Err(MarketplaceError::AlreadyClosed);
         }
+
+        let escrow_account: Address = env.current_contract_address();
+        let registry_nonce: u64 = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "get_nonce"),
+            (escrow_account.clone(),).into_val(&env),
+        );
+        let _: () = env.invoke_contract(
+            &registry_id,
+            &Symbol::new(&env, "transfer_credit"),
+            (
+                escrow_account.clone(),
+                seller.clone(),
+                offer.credit_id.clone(),
+                registry_nonce,
+            )
+                .into_val(&env),
+        );
 
         // Retrieve and clear escrowed amount
         let escrowed: i128 = env
@@ -436,8 +469,31 @@ mod tests {
         env.mock_all_auths();
         let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
         let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
-        client.cancel_offer(&seller, &offer_id);
+        client.cancel_offer(&seller, &offer_id, &registry_id);
         assert!(!client.get_offer(&offer_id).active);
+    }
+
+    #[test]
+    fn test_double_listing_prevention() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        let _offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
+        assert!(client.try_create_offer(&seller, &credit_id, &20_000_000, &250_000, &registry_id, &None).is_err());
+    }
+
+    #[test]
+    fn test_cancel_offer_returns_credit_to_seller() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
+        let registry_client = carbonchain_credit_registry::CreditRegistryClient::new(&env, &registry_id);
+        let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
+        let credit = registry_client.get_credit(&credit_id);
+        assert_ne!(credit.owner, seller);
+        client.cancel_offer(&seller, &offer_id, &registry_id);
+        let credit = registry_client.get_credit(&credit_id);
+        assert_eq!(credit.owner, seller);
     }
 
     #[test]
@@ -446,8 +502,8 @@ mod tests {
         env.mock_all_auths();
         let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
         let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
-        client.cancel_offer(&seller, &offer_id);
-        assert!(client.try_cancel_offer(&seller, &offer_id).is_err());
+        client.cancel_offer(&seller, &offer_id, &registry_id);
+        assert!(client.try_cancel_offer(&seller, &offer_id, &registry_id).is_err());
     }
 
     #[test]
@@ -502,7 +558,7 @@ mod tests {
         let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
         let other = Address::generate(&env);
         let ononce = client.nonce(&other);
-        assert!(client.try_cancel_offer(&other, &offer_id, &ononce).is_err());
+        assert!(client.try_cancel_offer(&other, &offer_id, &registry_id).is_err());
     }
 
     // ── get_active_offers_by_seller tests ────────────────────────────────────
@@ -515,7 +571,7 @@ mod tests {
         let id0 = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
         let id1 = client.create_offer(&seller, &credit_id, &20_000_000, &250_000, &registry_id, &None);
         // Cancel the first offer.
-        client.cancel_offer(&seller, &id0);
+        client.cancel_offer(&seller, &id0, &registry_id);
         // get_offers_by_seller still returns both.
         assert_eq!(client.get_offers_by_seller(&seller).len(), 2);
         // get_active_offers_by_seller must return only the open one.
@@ -530,7 +586,7 @@ mod tests {
         env.mock_all_auths();
         let (client, seller, _admin, registry_id, credit_id) = setup_with_registry(&env);
         let id0 = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
-        client.cancel_offer(&seller, &id0);
+        client.cancel_offer(&seller, &id0, &registry_id);
         assert_eq!(client.get_active_offers_by_seller(&seller).len(), 0);
     }
 
@@ -564,7 +620,7 @@ mod tests {
         let (client, seller, admin, registry_id, credit_id) = setup_with_registry(&env);
         let offer_id = client.create_offer(&seller, &credit_id, &10_000_000, &500_000, &registry_id, &None);
         client.pause(&admin);
-        assert!(client.try_cancel_offer(&seller, &offer_id).is_err());
+        assert!(client.try_cancel_offer(&seller, &offer_id, &registry_id).is_err());
     }
 
     #[test]
@@ -584,7 +640,7 @@ mod tests {
         let price = 10_000_000i128;
         let offer_id = client.create_offer(&seller, &credit_id, &price, &500_000, &registry_id);
         assert!(client.get_offer(&offer_id).active);
-        client.cancel_offer(&seller, &offer_id);
+        client.cancel_offer(&seller, &offer_id, &registry_id);
         assert!(!client.get_offer(&offer_id).active);
     }
 
@@ -598,7 +654,7 @@ mod tests {
         let offer_before = client.get_offer(&offer_id);
         assert!(offer_before.active);
         assert_eq!(offer_before.price_xlm, price);
-        client.cancel_offer(&seller, &offer_id);
+        client.cancel_offer(&seller, &offer_id, &registry_id);
         let offer_after = client.get_offer(&offer_id);
         assert!(!offer_after.active);
     }
