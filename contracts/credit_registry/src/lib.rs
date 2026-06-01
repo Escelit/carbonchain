@@ -1103,6 +1103,27 @@ impl CreditRegistry {
     }
 
     #[test]
+    fn test_remove_verifier_emits_event() {
+        let (env, client, admin, verifier) = setup();
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+
+        let events_before = env.events().all().len();
+        let nonce2 = client.get_nonce(&admin);
+        client.remove_verifier(&admin, &verifier, &nonce2);
+
+        let events_after = env.events().all();
+        assert_eq!(events_after.len(), events_before + 1);
+
+        let (_, topics, data): (_, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) =
+            events_after.get(events_before).unwrap();
+        let expected_topic: soroban_sdk::Val = symbol_short!("verifier_removed").into();
+        assert_eq!(topics.get(0).unwrap(), expected_topic);
+        let expected_data: soroban_sdk::Val = verifier.clone().into();
+        assert_eq!(data, expected_data);
+    }
+
+    #[test]
     fn test_mark_retired() {
         let env = Env::default();
         env.mock_all_auths();
