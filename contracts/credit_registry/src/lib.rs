@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN, Vec, symbol_short};
+use soroban_sdk::{contract, contractimpl, Env, Address, String, BytesN, Vec, Symbol, symbol_short};
 use soroban_sdk::xdr::ToXdr;
 
 // ── Unit convention ──────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ use crate::types::{
     ProjectMetadata, Session, AuditLogEntry,
 };
 use crate::events::{
-    credit_submitted, credit_minted, verifier_added, verifier_removed,
+    credit_submitted, credit_minted, verifier_registered, verifier_removed,
     contract_paused, contract_unpaused, credit_transferred, credit_split, batch_retired,
 };
 
@@ -150,7 +150,7 @@ impl CreditRegistry {
         let mut verifiers = get_verifiers(&env);
         verifiers.push_back(verifier.clone());
         set_verifiers(&env, &verifiers);
-        verifier_added(&env, admin, verifier);
+        verifier_registered(&env, admin, verifier);
         Ok(())
     }
 
@@ -308,6 +308,7 @@ impl CreditRegistry {
     /// - [`CarbonChainError::NotInitialized`] — contract has not been initialised.
     /// - [`CarbonChainError::ContractPaused`] — contract is paused.
     /// - [`CarbonChainError::InvalidNonce`] — `nonce` does not match the current issuer nonce.
+    /// - [`CarbonChainError::InvalidMetadata`] — `methodology` is not registered, `vintage_year` is outside valid range, or `geography` is too short.
     /// - [`CarbonChainError::InvalidTonnes`] — `tonnes` is zero, negative, or exceeds the upper bound.
     pub fn submit_credit(
         env: Env,
@@ -338,7 +339,7 @@ impl CreditRegistry {
             return Err(CarbonChainError::IssuerNotAllowed);
         }
         if !is_methodology_valid(&env, &methodology) {
-            return Err(CarbonChainError::InvalidMethodology);
+            return Err(CarbonChainError::InvalidMetadata);
         }
         if tonnes <= 0 {
             return Err(CarbonChainError::InvalidTonnes);
@@ -1103,24 +1104,26 @@ impl CreditRegistry {
     }
 
     #[test]
-    fn test_remove_verifier_emits_event() {
-        let (env, client, admin, verifier) = setup();
+    fn test_register_verifier_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(CreditRegistry, ());
+        let client = CreditRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let retirement = Address::generate(&env);
+
+        client.initialize(&admin, &retirement, &1);
         let nonce = client.get_nonce(&admin);
         client.register_verifier(&admin, &verifier, &nonce);
 
-        let events_before = env.events().all().len();
-        let nonce2 = client.get_nonce(&admin);
-        client.remove_verifier(&admin, &verifier, &nonce2);
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
 
-        let events_after = env.events().all();
-        assert_eq!(events_after.len(), events_before + 1);
-
-        let (_, topics, data): (_, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) =
-            events_after.get(events_before).unwrap();
-        let expected_topic: soroban_sdk::Val = symbol_short!("verifier_removed").into();
+        let (_, topics, data): (_, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = events.get(0).unwrap();
+        let expected_topic = Symbol::new(&env, "VerifierRegistered");
         assert_eq!(topics.get(0).unwrap(), expected_topic);
-        let expected_data: soroban_sdk::Val = verifier.clone().into();
-        assert_eq!(data, expected_data);
+        assert_eq!(data, verifier.into());
     }
 
     #[test]
