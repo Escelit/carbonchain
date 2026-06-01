@@ -1604,4 +1604,45 @@ impl CreditRegistry {
 
         assert_eq!(result, Err(CarbonChainError::SessionNotFound));
     }
+
+    // ── Tests for Issue #164: configure_verifier_services auth ───────────────
+
+    #[test]
+    fn test_admin_can_configure_verifier_services() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(CreditRegistry, ());
+        let client = CreditRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let retirement = Address::generate(&env);
+        client.initialize(&admin, &retirement, &1);
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+        let mut services = soroban_sdk::Vec::new(&env);
+        services.push_back(ServiceType::CreditApproval);
+        let nonce2 = client.get_nonce(&admin);
+        let result = client.try_configure_verifier_services(&admin, &verifier, &services, &nonce2);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verifier_cannot_self_configure_services() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(CreditRegistry, ());
+        let client = CreditRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let retirement = Address::generate(&env);
+        client.initialize(&admin, &retirement, &1);
+        let nonce = client.get_nonce(&admin);
+        client.register_verifier(&admin, &verifier, &nonce);
+        let mut services = soroban_sdk::Vec::new(&env);
+        services.push_back(ServiceType::CreditApproval);
+        // verifier tries to configure their own services — must fail
+        let vnonce = client.get_nonce(&verifier);
+        let result = client.try_configure_verifier_services(&verifier, &verifier, &services, &vnonce);
+        assert_eq!(result, Err(CarbonChainError::Unauthorized));
+    }
 }

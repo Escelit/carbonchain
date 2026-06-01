@@ -435,6 +435,16 @@ mod tests {
     }
 
     #[test]
+    fn test_oracle_address_stored_in_data_point() {
+        let (env, client, oracle, registry_id, _admin) = setup();
+        let proj = String::from_str(&env, "PROJ-001");
+        let nonce = client.get_nonce(&oracle);
+        client.update_mrv_data(&oracle, &proj, &1_000_000, &env.ledger().timestamp(), &registry_id, &nonce);
+        let latest = client.get_latest(&proj).unwrap().unwrap();
+        assert_eq!(latest.oracle, oracle);
+    }
+
+    #[test]
     fn test_history_accumulates() {
         let (env, client, oracle, registry_id, _admin) = setup();
         let proj = String::from_str(&env, "PROJ-001");
@@ -562,7 +572,6 @@ mod tests {
 
     // ── Pause tests ──────────────────────────────────────────────────────────
 
-    #[test]
     #[test]
     fn test_pause_blocks_update_mrv_data() {
         let (env, client, oracle, registry_id, admin) = setup();

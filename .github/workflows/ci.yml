@@ -96,7 +96,7 @@ jobs:
         with:
           workspaces: contracts
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        run: cargo install --locked stellar-cli@26.1.0 --features opt
       - name: Deploy contracts & run smoke tests
         env:
           ADMIN_SECRET_KEY: ${{ secrets.TESTNET_ADMIN_SECRET_KEY }}
