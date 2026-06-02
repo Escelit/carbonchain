@@ -43,9 +43,10 @@ stellar keys fund "$ADMIN_ADDRESS" --network testnet || true
 
 log "Building Soroban contracts..."
 (cd "$SCRIPT_DIR/../contracts" && \
-  cargo build --target wasm32-unknown-unknown --release --quiet)
+  CARGO_TARGET_WASM32V1_NONE_RUSTFLAGS="-C link-args=--allow-multiple-definition" \
+  cargo build --target wasm32v1-none --release --quiet)
 
-WASM_DIR="$SCRIPT_DIR/../contracts/target/wasm32-unknown-unknown/release"
+WASM_DIR="$SCRIPT_DIR/../contracts/target/wasm32v1-none/release"
 
 # ── 3. Deploy contracts ───────────────────────────────────────────────────────
 
