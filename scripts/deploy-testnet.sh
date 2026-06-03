@@ -43,8 +43,13 @@ stellar keys fund "$ADMIN_ADDRESS" --network testnet || true
 
 log "Building Soroban contracts..."
 (cd "$SCRIPT_DIR/../contracts" && \
-  CARGO_TARGET_WASM32V1_NONE_RUSTFLAGS="-C link-args=--allow-multiple-definition" \
-  cargo build --target wasm32v1-none --release --quiet)
+  cargo build -p carbonchain-credit-registry --target wasm32v1-none --release --quiet)
+(cd "$SCRIPT_DIR/../contracts" && \
+  cargo build -p carbonchain-retirement --target wasm32v1-none --release --quiet)
+(cd "$SCRIPT_DIR/../contracts" && \
+  cargo build -p carbonchain-marketplace --target wasm32v1-none --release --quiet)
+(cd "$SCRIPT_DIR/../contracts" && \
+  cargo build -p carbonchain-mrv-oracle --target wasm32v1-none --release --quiet)
 
 WASM_DIR="$SCRIPT_DIR/../contracts/target/wasm32v1-none/release"
 
