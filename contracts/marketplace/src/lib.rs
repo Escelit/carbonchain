@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, token, Env, Address, BytesN, Symbol, Vec, IntoVal};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, Env, Address, String, BytesN, Symbol, Vec, IntoVal};
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 /// Minimum TTL in ledgers (~1 year at 5s/ledger).
