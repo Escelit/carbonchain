@@ -1,7 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { App } from './app';
-import { TranslationService } from './core/services/translation.service';
 
 describe('App', () => {
   beforeEach(async () => {
@@ -9,7 +8,6 @@ describe('App', () => {
       imports: [App],
       providers: [
         provideRouter([]),
-        { provide: TranslationService, useValue: { init: vi.fn() } },
       ],
     }).compileComponents();
   });
