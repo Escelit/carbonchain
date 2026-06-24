@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { CreditMetadata, CreditStatus } from '@shared';
-import { ApiService } from '../core/services/api.service';
+import { ApiService, ProvenanceEvent } from '../core/services/api.service';
 import { AuthService } from '../core/services/auth.service';
 import { StellarWalletService } from '../core/services/stellar-wallet.service';
 
@@ -252,6 +252,9 @@ export class CreditDetailComponent implements OnInit {
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
   readonly mrvHistory = signal<import('@shared').MrvDataPoint[]>([]);
+  readonly provenance = signal<ProvenanceEvent[]>([]);
+  readonly provenanceLoading = signal(false);
+  readonly provenanceError = signal<string | null>(null);
 
   readonly isOwner = () => {
     const c = this.credit();
@@ -268,6 +271,20 @@ export class CreditDetailComponent implements OnInit {
       this.error.set(err instanceof Error ? err.message : 'Failed to load credit.');
     } finally {
       this.loading.set(false);
+    }
+    this.loadProvenance(id);
+  }
+
+  private async loadProvenance(id: string): Promise<void> {
+    this.provenanceLoading.set(true);
+    this.provenanceError.set(null);
+    try {
+      const events = await firstValueFrom(this.api.getCreditProvenance(id));
+      this.provenance.set(events);
+    } catch (err) {
+      this.provenanceError.set(err instanceof Error ? err.message : 'Failed to load provenance.');
+    } finally {
+      this.provenanceLoading.set(false);
     }
   }
 
