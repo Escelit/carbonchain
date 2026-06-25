@@ -104,6 +104,19 @@ export class StellarService implements OnModuleInit {
       const preparedTx = rpc.assembleTransaction(tx, simulation).build();
       preparedTx.sign(signerKeypair);
 
+      try {
+        const response =
+          await this.sorobanRpcServer.sendTransaction(preparedTx);
+
+        if ((response.status as string) === 'PENDING') {
+          return this.pollTransactionStatus(response.hash);
+        }
+        throw new Error(`Transaction failed with status: ${response.status}`);
+      } catch (error: unknown) {
+        const isBadSeq =
+          (error as Error).message?.toLowerCase().includes('tx_bad_seq') ||
+          (error as any)?.response?.data?.extras?.result_codes?.transaction ===
+            'tx_bad_seq';
       const response = await this.submitTransactionWithRetry(() =>
         this.sorobanRpcServer.sendTransaction(preparedTx),
       );
@@ -149,6 +162,20 @@ export class StellarService implements OnModuleInit {
     const tx = txBuilder.setTimeout(30).build();
     tx.sign(signerKeypair);
 
+    try {
+      return await this.horizonServer.submitTransaction(tx);
+    } catch (error: unknown) {
+      const err = error as any;
+      const isBadSeq =
+        err?.response?.data?.extras?.result_codes?.transaction === 'tx_bad_seq';
+
+      if (isBadSeq && retries > 0) {
+        this.logger.warn(`tx_bad_seq for ${pk}, resetting cache and retrying`);
+        this.seqNoManager.reset(pk);
+        return this.buildAndSubmit(operations, signerKeypair, retries - 1);
+      }
+      throw error;
+    }
     return this.submitTransactionWithRetry(() =>
       this.horizonServer.submitTransaction(tx),
     );
