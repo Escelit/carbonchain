@@ -52,6 +52,9 @@ test_snapshots/
 *.js.map
 *.d.ts.map
 build/
+# Rust/Soroban compiled output
+*.wasm
+Cargo.lock
 
 # Package manager
 .npm/
