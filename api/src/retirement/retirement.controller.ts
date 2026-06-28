@@ -11,7 +11,7 @@ import {
   Response,
   NotFoundException,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import type { Response as ExpressResponse } from 'express';
 import { RetirementService, RetireDto, BatchRetireDto } from './retirement.service';
 import { RetirementRecord } from '../shared';
@@ -39,7 +39,9 @@ export class RetirementController {
     private readonly certificateService: CertificateService,
   ) {}
 
-  /** POST /retirement — protected: requires JWT */
+  @ApiOperation({ summary: 'Retire a carbon credit' })
+  @ApiResponse({ status: 201, description: 'Credit retired successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseGuards(JwtAuthGuard)
   @Post()
   retire(
@@ -48,14 +50,17 @@ export class RetirementController {
     return this.retirementService.retire(dto);
   }
 
-  /** POST /retirement/batch — retire up to 20 credits in one call; protected: requires JWT */
+  @ApiOperation({ summary: 'Batch retire multiple credits at once' })
+  @ApiResponse({ status: 201, description: 'Credits retired in batch' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseGuards(JwtAuthGuard)
   @Post('batch')
   batchRetire(@Body() dto: BatchRetireDto): Promise<{ retirementIds: string[] }> {
     return this.retirementService.batchRetire(dto);
   }
 
-  /** GET /retirement — paginated list */
+  @ApiOperation({ summary: 'List retirements (paginated)' })
+  @ApiResponse({ status: 200, description: 'Paginated list of retirement records' })
   @Get()
   listRetirements(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -64,13 +69,16 @@ export class RetirementController {
     return this.retirementService.listRetirements(page, limit);
   }
 
-  /** GET /retirement/:id — fetch a retirement record */
+  @ApiOperation({ summary: 'Get retirement record by ID' })
+  @ApiResponse({ status: 200, description: 'Retirement record' })
+  @ApiResponse({ status: 404, description: 'Retirement not found' })
   @Get(':id')
   getRetirement(@Param('id') id: string): Promise<RetirementRecord> {
     return this.retirementService.getRetirement(id);
   }
 
-  /** GET /retirement/account/:address — paginated retirements for an account */
+  @ApiOperation({ summary: 'Get retirements by account address' })
+  @ApiResponse({ status: 200, description: 'Paginated retirements for account' })
   @Get('account/:address')
   getByAccount(
     @Param('address') address: string,
@@ -80,7 +88,10 @@ export class RetirementController {
     return this.retirementService.getRetirementsByAccount(address, page, limit);
   }
 
-  /** GET /certificates/:id/download — download retirement certificate as PDF (protected: requires JWT) */
+  @ApiOperation({ summary: 'Download retirement certificate as PDF' })
+  @ApiResponse({ status: 200, description: 'PDF certificate' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Certificate not found' })
   @UseGuards(JwtAuthGuard)
   @Get('certificates/:id/download')
   async downloadCertificate(
@@ -114,7 +125,9 @@ export class RetirementController {
     res.send(pdfBuffer);
   }
 
-  /** GET /certificates/:id/verify — verify retirement certificate authenticity (public) */
+  @ApiOperation({ summary: 'Verify retirement certificate authenticity' })
+  @ApiResponse({ status: 200, description: 'Certificate verification result' })
+  @ApiResponse({ status: 404, description: 'Certificate not found' })
   @Get('certificates/:id/verify')
   verifyCertificate(
     @Param('id') certificateId: string,
